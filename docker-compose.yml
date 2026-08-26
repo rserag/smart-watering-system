@@ -1,0 +1,75 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-watering}
+      POSTGRES_USER: ${POSTGRES_USER:-watering}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - watering_db:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-watering}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-watering}
+      DEVICE_SHARED_TOKEN: ${DEVICE_SHARED_TOKEN}
+      SERVER_CONFIG_VERSION: ${SERVER_CONFIG_VERSION:-1}
+      AUTH_MODE: ${AUTH_MODE:-development}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      DEVELOPMENT_USER_EMAIL: ${DEVELOPMENT_USER_EMAIL:-local-reviewer@example.com}
+      DEVELOPMENT_USER_NAME: ${DEVELOPMENT_USER_NAME:-Local reviewer}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ALLOWED_GOOGLE_EMAILS: ${ALLOWED_GOOGLE_EMAILS:-}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+    volumes:
+      - ./backend/certs/server.key:/certs/server.key:ro
+      - ./backend/certs/server.crt:/certs/server.crt:ro
+      - ./backend/certs/ca.crt:/certs/ca.crt:ro
+    ports:
+      - "127.0.0.1:9443:8443"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import ssl,urllib.request; c=ssl.create_default_context(cafile='/certs/ca.crt'); urllib.request.urlopen('https://localhost:8443/health', context=c)"]
+      interval: 5s
+      timeout: 4s
+      retries: 15
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  gateway:
+    image: nginx:1.29-alpine
+    volumes:
+      - ./gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./backend/certs/server.key:/certs/server.key:ro
+      - ./backend/certs/server.crt:/certs/server.crt:ro
+    ports:
+      - "3000:3000"
+      - "${HTTPS_PORT:-8443}:8443"
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  watering_db:

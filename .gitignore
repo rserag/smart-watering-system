@@ -1,0 +1,12 @@
+.DS_Store
+.env
+backend/.venv/
+**/__pycache__/
+*.py[cod]
+backend/.pytest_cache/
+backend/certs/*
+!backend/certs/.gitkeep
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+frontend/.wrangler/
