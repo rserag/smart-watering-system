@@ -6,6 +6,13 @@ This workspace contains three pieces:
 - `backend`: FastAPI, PostgreSQL persistence, Google OIDC, device/dashboard WebSockets, historical APIs, and CSV export.
 - `frontend`: the private live and historical dashboard.
 
+For the Padval VM production layout and rollback procedure, see `VM_DEPLOYMENT.md`.
+
+Pull requests run backend tests, frontend lint/build checks, an ESP32 firmware compile with
+the non-secret example configuration, Compose validation, and container builds. Merges to
+`main` publish digest-pinned images to GHCR and deploy them through the protected GitHub
+`production` environment.
+
 ## Local start
 
 The certificate has SANs for `192.168.1.3`, `localhost`, `127.0.0.1`, and `Rafayels-MacBook-Pro.local`.

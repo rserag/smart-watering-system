@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+request=${SSH_ORIGINAL_COMMAND-}
+[[ -n $request ]] || {
+  printf 'A deployment command is required.\n' >&2
+  exit 64
+}
+
+exec sudo -n /usr/local/sbin/watering-deploy --request "$request"

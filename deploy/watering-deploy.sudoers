@@ -1,0 +1,1 @@
+watering-deploy ALL=(root) NOPASSWD: /usr/local/sbin/watering-deploy --request *

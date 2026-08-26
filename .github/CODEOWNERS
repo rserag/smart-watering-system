@@ -1,0 +1,5 @@
+/.github/ @rserag
+/deploy/ @rserag
+/compose.vm.yml @rserag
+/gateway/Dockerfile.vm @rserag
+/gateway/nginx.vm.conf @rserag

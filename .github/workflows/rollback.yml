@@ -1,0 +1,37 @@
+name: Roll back production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    name: Roll back production
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://watering.sibex.zip
+    concurrency:
+      group: watering-production
+      cancel-in-progress: false
+    steps:
+      - name: Configure restricted SSH access
+        env:
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" >"$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" >"$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+      - name: Activate previous healthy release
+        env:
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ vars.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ vars.DEPLOY_USER }}
+        run: |
+          ssh -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+            -i "$HOME/.ssh/id_ed25519" -p "$DEPLOY_PORT" \
+            "$DEPLOY_USER@$DEPLOY_HOST" rollback

@@ -1,0 +1,5 @@
+FROM nginx:1.29-alpine
+
+COPY nginx.vm.conf /etc/nginx/nginx.conf
+
+EXPOSE 8080

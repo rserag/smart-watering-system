@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly compose_file=/opt/watering-system/compose.yml
+readonly app_env=/home/c/watering-system/.env
+readonly state_dir=/opt/watering-system/state
+readonly release_dir=/opt/watering-system/releases
+readonly current_env="$state_dir/current.env"
+readonly previous_env="$state_dir/previous.env"
+readonly bootstrap_compose=/home/c/watering-system/compose.vm.yml
+readonly lock_file=/run/lock/watering-system-deploy.lock
+
+log() {
+  printf '[watering-deploy] %s\n' "$*"
+  logger -t watering-deploy -- "$*"
+}
+
+die() {
+  log "ERROR: $*"
+  exit 1
+}
+
+validate_revision() {
+  [[ $1 =~ ^[0-9a-f]{40}$ ]] || die "invalid Git revision"
+}
+
+validate_image() {
+  local component=$1
+  local image=$2
+  [[ $image =~ ^ghcr\.io/rserag/smart-watering-${component}@sha256:[0-9a-f]{64}$ ]] ||
+    die "invalid ${component} image reference"
+}
+
+compose() {
+  local release_env=$1
+  shift
+  docker compose \
+    --project-name watering-system \
+    --env-file "$app_env" \
+    --env-file "$release_env" \
+    --file "$compose_file" \
+    "$@"
+}
+
+health_check() {
+  curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8008/health >/dev/null &&
+    curl --fail --silent --show-error --max-time 15 http://127.0.0.1:8008/ >/dev/null
+}
+
+activate_release() {
+  local release_env=$1
+  compose "$release_env" config --quiet || return 1
+  compose "$release_env" pull backend frontend gateway || return 1
+  compose "$release_env" up -d --wait --wait-timeout 180 || return 1
+  health_check || return 1
+}
+
+restore_bootstrap() {
+  log "restoring the pre-CI watering stack"
+  docker compose \
+    --project-name watering-system \
+    --env-file "$app_env" \
+    --file "$bootstrap_compose" \
+    up -d --no-build --wait --wait-timeout 180
+  health_check
+}
+
+deploy_release() {
+  local revision=$1
+  local backend_image=$2
+  local frontend_image=$3
+  local gateway_image=$4
+  local candidate
+
+  validate_revision "$revision"
+  validate_image backend "$backend_image"
+  validate_image frontend "$frontend_image"
+  validate_image gateway "$gateway_image"
+
+  candidate=$(mktemp "$state_dir/candidate.XXXXXX")
+  chmod 600 "$candidate"
+  {
+    printf 'BACKEND_IMAGE=%s\n' "$backend_image"
+    printf 'FRONTEND_IMAGE=%s\n' "$frontend_image"
+    printf 'GATEWAY_IMAGE=%s\n' "$gateway_image"
+    printf 'DEPLOYED_REVISION=%s\n' "$revision"
+  } >"$candidate"
+
+  if activate_release "$candidate"; then
+    if [[ -f $current_env ]]; then
+      cp --preserve=mode "$current_env" "$previous_env"
+    fi
+    install -m 600 "$candidate" "$release_dir/$revision.env"
+    install -m 600 "$candidate" "$current_env"
+    rm -f "$candidate"
+    log "release $revision is healthy"
+    return 0
+  fi
+
+  log "release $revision failed; starting rollback"
+  if [[ -f $current_env ]] && activate_release "$current_env"; then
+    rm -f "$candidate"
+    log "restored the previous immutable release"
+    return 1
+  fi
+  if ! restore_bootstrap; then
+    rm -f "$candidate"
+    die "candidate and rollback both failed"
+  fi
+  rm -f "$candidate"
+  log "restored the pre-CI watering stack"
+  return 1
+}
+
+rollback_release() {
+  local rollback_candidate
+
+  [[ -f $previous_env ]] || die "no previous immutable release is available"
+  rollback_candidate=$(mktemp "$state_dir/rollback.XXXXXX")
+  cp --preserve=mode "$previous_env" "$rollback_candidate"
+
+  if ! activate_release "$rollback_candidate"; then
+    rm -f "$rollback_candidate"
+    die "rollback candidate failed its health check; current release was left configured"
+  fi
+
+  if [[ -f $current_env ]]; then
+    cp --preserve=mode "$current_env" "$previous_env"
+  fi
+  install -m 600 "$rollback_candidate" "$current_env"
+  rm -f "$rollback_candidate"
+  log "rollback completed successfully"
+}
+
+main() {
+  [[ ${1-} == --request && $# == 2 ]] || die "invalid invocation"
+  [[ -r $compose_file ]] || die "production Compose file is missing"
+  [[ -r $app_env ]] || die "application environment file is missing"
+
+  install -d -m 700 "$state_dir" "$release_dir"
+  exec 9>"$lock_file"
+  flock -n 9 || die "another watering deployment is in progress"
+
+  local request=$2
+  local -a words
+  read -r -a words <<<"$request"
+
+  case ${words[0]-} in
+    release)
+      [[ ${#words[@]} == 5 ]] || die "release requires a revision and three image references"
+      deploy_release "${words[1]}" "${words[2]}" "${words[3]}" "${words[4]}"
+      ;;
+    rollback)
+      [[ ${#words[@]} == 1 ]] || die "rollback takes no arguments"
+      rollback_release
+      ;;
+    *)
+      die "unsupported deployment request"
+      ;;
+  esac
+}
+
+main "$@"

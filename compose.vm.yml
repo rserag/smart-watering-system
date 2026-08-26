@@ -1,0 +1,105 @@
+name: watering-system
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-watering}
+      POSTGRES_USER: ${POSTGRES_USER:-watering}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - watering_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    shm_size: 128m
+    mem_limit: 768m
+    logging: *default-logging
+
+  backend:
+    image: ${BACKEND_IMAGE:?BACKEND_IMAGE must be an immutable GHCR image reference}
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --proxy-headers
+      - --forwarded-allow-ips
+      - "*"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-watering}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-watering}
+      DEVICE_SHARED_TOKEN: ${DEVICE_SHARED_TOKEN}
+      SERVER_CONFIG_VERSION: ${SERVER_CONFIG_VERSION:-1}
+      AUTH_MODE: ${AUTH_MODE:-development}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      DEVELOPMENT_USER_EMAIL: ${DEVELOPMENT_USER_EMAIL:-local-reviewer@example.com}
+      DEVELOPMENT_USER_NAME: ${DEVELOPMENT_USER_NAME:-Local reviewer}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ALLOWED_GOOGLE_EMAILS: ${ALLOWED_GOOGLE_EMAILS:-}
+      FRONTEND_URL: ${FRONTEND_URL:-https://watering.sibex.zip}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://watering.sibex.zip}
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+    restart: unless-stopped
+    init: true
+    mem_limit: 512m
+    logging: *default-logging
+
+  frontend:
+    image: ${FRONTEND_IMAGE:?FRONTEND_IMAGE must be an immutable GHCR image reference}
+    expose:
+      - "3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000').then(r => { if (!r.ok) process.exit(1) }).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+    restart: unless-stopped
+    init: true
+    mem_limit: 512m
+    logging: *default-logging
+
+  gateway:
+    image: ${GATEWAY_IMAGE:?GATEWAY_IMAGE must be an immutable GHCR image reference}
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8008}:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 4s
+      retries: 15
+    restart: unless-stopped
+    mem_limit: 128m
+    logging: *default-logging
+
+volumes:
+  watering_db:
