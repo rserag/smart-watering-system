@@ -10,6 +10,7 @@ jobs:
   rollback:
     name: Roll back production
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment:
       name: production
       url: https://watering.sibex.zip
