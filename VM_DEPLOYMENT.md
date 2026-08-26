@@ -8,7 +8,8 @@ Host Nginx terminates public TLS using the existing `sibex-wildcard` certificate
 
 Verified on 2026-08-26:
 
-- Deployed at `/home/c/watering-system`.
+- Immutable deployment control is at `/opt/watering-system`; the protected application environment
+  and pre-CI recovery stack remain at `/home/c/watering-system`.
 - All four containers are healthy.
 - The only host binding is `127.0.0.1:8008`.
 - PostgreSQL persists in `watering-system_watering_db`.
