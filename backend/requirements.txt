@@ -1,8 +1,8 @@
-fastapi==0.116.1
-uvicorn[standard]==0.35.0
-SQLAlchemy[asyncio]==2.0.43
-asyncpg==0.30.0
-pydantic-settings==2.10.1
-Authlib==1.6.12
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+SQLAlchemy[asyncio]==2.0.52
+asyncpg==0.31.0
+pydantic-settings==2.15.0
+Authlib==1.7.2
 httpx==0.28.1
 itsdangerous==2.2.0
