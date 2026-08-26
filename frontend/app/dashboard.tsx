@@ -82,20 +82,20 @@ export default function Dashboard() {
   const [error, setError] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  const fetchJson = useCallback(async (path: string) => {
+  const fetchJson = useCallback(async <T,>(path: string): Promise<T> => {
     const response = await fetch(path, { credentials: 'include' });
     if (!response.ok) throw new Error(response.status === 401 ? 'Authentication required' : `Request failed (${response.status})`);
-    return response.json();
+    return response.json() as Promise<T>;
   }, []);
 
   const loadDevices = useCallback(async () => {
-    const data = await fetchJson('/api/devices') as Device[];
+    const data = await fetchJson<Device[]>('/api/devices');
     setDevices(data);
     setSelectedId((current) => current || data[0]?.id || '');
   }, [fetchJson]);
 
   useEffect(() => {
-    fetchJson('/api/me').then((identity: Me) => {
+    fetchJson<Me>('/api/me').then((identity) => {
       setMe(identity);
       if (identity.authenticated) return loadDevices();
     }).catch(() => setError('The dashboard cannot reach the local server. Trust its local CA and confirm the backend is running.'));
@@ -136,8 +136,8 @@ export default function Dashboard() {
       const eventQuery = new URLSearchParams({ from: range.from.toISOString(), to: range.to.toISOString(), zone_id: String(zoneId) });
       try {
         const [historyResult, eventResult] = await Promise.all([
-          fetchJson(`/api/devices/${encodeURIComponent(historyDeviceId)}/history?${query}`),
-          fetchJson(`/api/devices/${encodeURIComponent(historyDeviceId)}/events?${eventQuery}`),
+          fetchJson<{ points: HistoryPoint[] }>(`/api/devices/${encodeURIComponent(historyDeviceId)}/history?${query}`),
+          fetchJson<WateringEvent[]>(`/api/devices/${encodeURIComponent(historyDeviceId)}/events?${eventQuery}`),
         ]);
         if (active) { setHistory(historyResult.points); setEvents(eventResult); setError(''); }
       } catch (reason) {
