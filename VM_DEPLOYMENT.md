@@ -6,7 +6,7 @@ Host Nginx terminates public TLS using the existing `sibex-wildcard` certificate
 
 ## Current VM status
 
-Verified on 2026-08-26:
+Verified on 2026-08-27:
 
 - Immutable deployment control is at `/opt/watering-system`; the protected application environment
   and pre-CI recovery stack remain at `/home/c/watering-system`.
@@ -15,11 +15,12 @@ Verified on 2026-08-26:
 - PostgreSQL persists in `watering-system_watering_db`.
 - Docker logs are limited to three 10 MB files per service.
 - Backend health, frontend delivery, database access, valid device WebSocket authentication, invalid device-token rejection, and unauthenticated dashboard rejection passed.
-- `/etc/nginx/sites-available/watering.sibex.zip` is installed and validates, but is not enabled.
-- `watering.sibex.zip` does not yet resolve.
-- The stack remains in `AUTH_MODE=development`; Google client ID, client secret, and allowed emails are empty.
+- `/etc/nginx/sites-available/watering.sibex.zip` is enabled and validates.
+- `watering.sibex.zip` resolves through a proxied Cloudflare A record and is publicly healthy.
+- The stack runs in `AUTH_MODE=google`; the authorization redirect and exact production callback URL were verified.
+- A root-only daily logical backup and reusable isolated restore drill are installed on the VM.
 
-Public cutover is intentionally blocked until Google OAuth is configured. Do not enable the Nginx site or create public DNS before switching to `AUTH_MODE=google` and registering `https://watering.sibex.zip/auth/google/callback`.
+The production callback is `https://watering.sibex.zip/auth/google/callback`. Never expose the OAuth values or other contents of the VM environment file.
 
 ## Continuous deployment
 
@@ -85,8 +86,8 @@ original locally built stack from `/home/c/watering-system/compose.vm.yml` witho
 Do not add `--volumes` to any Compose recovery command; `watering-system_watering_db` contains the
 persistent application database.
 
-## Public cutover
+## External uptime monitoring
 
-Public cutover remains intentionally separate from deployment. Do not enable the host Nginx site
-or create public DNS while `AUTH_MODE=development` is active. Configure Google OAuth first, register
-`https://watering.sibex.zip/auth/google/callback`, and verify the email allowlist.
+`.github/workflows/uptime.yml` probes `https://watering.sibex.zip` every ten minutes from a GitHub-hosted runner. It verifies the homepage, application and database health, Google authentication mode, the Google authorization redirect host, and the exact production callback URL.
+
+The probe retries three times before declaring an incident. A failure opens and assigns a single GitHub issue to the repository owner; repeated failures reuse that issue. The next successful probe comments on and closes the incident automatically. The workflow can also be run manually from GitHub Actions.

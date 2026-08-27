@@ -91,7 +91,9 @@ jobs:
           SESSION_SECRET: ci-placeholder
         run: docker compose --file compose.vm.yml config --quiet
       - name: Validate deployment scripts
-        run: bash -n deploy/watering-deploy deploy/watering-deploy-ssh
+        run: |
+          bash -n deploy/watering-deploy deploy/watering-deploy-ssh monitoring/update_incident.sh
+          python -m py_compile monitoring/check_production.py
 
   container-build:
     name: Container build (${{ matrix.component }})
