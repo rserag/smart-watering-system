@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="frontend/public/brand/garden-watering-icon-192.png" width="112" alt="Garden Watering icon">
+</p>
+
 # Watering system
 
 This workspace contains three pieces:
