@@ -73,6 +73,31 @@ class WateringEvent(Base):
     status: Mapped[str] = mapped_column(String(30), default="running")
 
 
+class MainTankState(Base):
+    __tablename__ = "main_tank_states"
+
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True
+    )
+    is_low: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    last_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class MainTankAlert(Base):
+    __tablename__ = "main_tank_alerts"
+    __table_args__ = (Index("ix_main_tank_alert_pending", "device_id", "sent_at"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(
+        ForeignKey("devices.id", ondelete="CASCADE"), nullable=False
+    )
+    is_low: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+
 class Command(Base):
     __tablename__ = "commands"
 
@@ -97,4 +122,3 @@ class UserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
-

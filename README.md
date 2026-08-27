@@ -50,13 +50,13 @@ Google allows localhost OAuth redirects. It does not accept the laptop's raw LAN
 
 ## ESP32 connection
 
-The current local `include/secrets.h` is configured for:
+The current local `include/secrets.h` is configured for the production VM:
 
 ```text
-wss://192.168.1.3:8443/ws/device
+wss://watering.sibex.zip/ws/device
 ```
 
-It uses the same bearer token as `DEVICE_SHARED_TOKEN` in `.env`. The ESP32 accepts the local untrusted certificate while retaining WSS encryption. Build the firmware with:
+It uses the same bearer token as production's `DEVICE_SHARED_TOKEN`. The ESP32 currently accepts the server certificate without validation while retaining WSS encryption; this permits connectivity but does not protect against server impersonation. Build the firmware with:
 
 ```sh
 cd watering-system-iot
@@ -64,6 +64,29 @@ cd watering-system-iot
 ```
 
 The firmware has not been flashed automatically because uploading can affect connected watering hardware. Flash it when the controller and valves are in a safe state.
+
+### Main-tank low-water protection
+
+Connect a normally closed float switch between ESP32 GPIO 32 and GND, oriented
+so it is closed while the tank has enough water. An open switch is treated as
+low water, which also makes a broken or disconnected wire fail safe. After a
+250-millisecond low-level confirmation, the ESP32 stops every relay locally and
+blocks automatic and manual watering. A safe level must remain stable for two
+seconds before watering can resume.
+
+Telegram alerts are sent by the backend on the low-water and restored
+transitions. Create a bot with Telegram's `@BotFather`, send the bot one message,
+and obtain the destination chat ID from the bot API `getUpdates` response. Add
+these values to the backend environment and restart it:
+
+```dotenv
+TELEGRAM_BOT_TOKEN=123456:replace-with-real-token
+TELEGRAM_CHAT_ID=replace-with-your-chat-id
+```
+
+If Telegram is temporarily unavailable, the transition remains pending and is
+retried on later telemetry. The hardware cutoff does not depend on Wi-Fi,
+Telegram, or the backend.
 
 ## Dashboard data
 

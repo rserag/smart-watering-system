@@ -51,6 +51,8 @@ services:
       ALLOWED_GOOGLE_EMAILS: ${ALLOWED_GOOGLE_EMAILS:-}
       FRONTEND_URL: ${FRONTEND_URL:-https://watering.sibex.zip}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://watering.sibex.zip}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     expose:
       - "8000"
     depends_on:

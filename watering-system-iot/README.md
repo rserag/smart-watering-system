@@ -13,6 +13,11 @@ is unavailable.
 | 3 | 25 | 36 / VP |
 | 4 | 33 | 39 / VN |
 
+The main-tank float switch uses GPIO 32 and GND. Mount and orient a normally
+closed float switch so it connects GPIO 32 to GND while the water level is
+safe. The ESP32 uses its internal pull-up: a low pin means water is available;
+an open switch, low water, or a disconnected wire means the tank is low.
+
 The transistor relay drivers are active when the ESP32 output is `HIGH`. All
 relays are driven `LOW` before the controller loads saved configuration.
 
@@ -30,6 +35,9 @@ relays are driven `LOW` before the controller loads saved configuration.
   temporarily delays the main control loop.
 - A completed zone enters a 30-minute cooldown.
 - Only one zone can energize a relay at a time.
+- A low-water signal is confirmed within 250 milliseconds, then every relay is
+  turned off and both automatic and manual watering are blocked. Recovery is
+  debounced for two seconds before watering can resume.
 - Sensor and maximum-watering faults turn the relay off and latch the zone in a
   fault state.
 
@@ -205,6 +213,7 @@ being replayed after a reboot.
 
 The device sends a `device.hello` after connecting, then telemetry on the
 configured interval and immediately after sensor or controller state changes.
+The top-level `mainTankLow` field reports the debounced float-switch state.
 Each zone reports:
 
 - Latest and filtered raw ADC values.

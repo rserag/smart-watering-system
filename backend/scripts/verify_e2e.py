@@ -38,6 +38,7 @@ def telemetry(sequence: int, relay_on: bool, moisture: float) -> dict:
         "uptimeMs": sequence * 1000,
         "configRevision": 7,
         "wifiRssi": -58,
+        "mainTankLow": False,
         "zones": [zone(index, relay_on if index == 1 else False, moisture + index) for index in range(1, 5)],
     }
 

@@ -72,6 +72,11 @@ The remote `.env` must be mode 600. Do not display its values. Public cutover re
 https://watering.sibex.zip/auth/google/callback
 ```
 
+Main-tank notifications additionally require non-empty `TELEGRAM_BOT_TOKEN`
+and `TELEGRAM_CHAT_ID` values in that protected `.env`. Restart the backend
+after adding them; `/health` reports `telegramAlertsConfigured: true` without
+exposing either value.
+
 Do not publicly enable the host Nginx site while `AUTH_MODE=development` is active.
 
 ## Rollback

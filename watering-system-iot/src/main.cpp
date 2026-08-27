@@ -9,10 +9,12 @@ namespace {
 
 constexpr uint8_t RELAY_PINS[watering::ZONE_COUNT] = {27, 26, 25, 33};
 constexpr uint8_t SENSOR_PINS[watering::ZONE_COUNT] = {34, 35, 36, 39};
+constexpr uint8_t MAIN_TANK_LEVEL_PIN = 32;
 
 watering::SystemConfig systemConfig;
 watering::ConfigStore configStore;
-watering::WateringController controller(RELAY_PINS, SENSOR_PINS);
+watering::WateringController controller(RELAY_PINS, SENSOR_PINS,
+                                        MAIN_TANK_LEVEL_PIN);
 watering::NetworkManager network(controller, configStore, systemConfig);
 
 }  // namespace

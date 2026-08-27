@@ -21,11 +21,24 @@ from app.auth import lookup_user_session, require_user, router as auth_router
 from app.config import get_settings
 from app.database import SessionLocal, engine, get_session
 from app.hubs import dashboard_hub, device_hub
-from app.models import Base, Command, Device, TelemetrySample, UserSession, WateringEvent, ZoneSample
+from app.models import (
+    Base,
+    Command,
+    Device,
+    MainTankAlert,
+    MainTankState,
+    TelemetrySample,
+    UserSession,
+    WateringEvent,
+    ZoneSample,
+)
+from app.notifications import send_main_tank_alert
 from app.protocol import CommandAck, CommandRequest, DeviceHello, TelemetryMessage
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+# HTTPX logs full request URLs at INFO; Telegram embeds the bot token in its URL.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("watering-server")
 settings = get_settings()
 
@@ -42,7 +55,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="Watering System Server", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Watering System Server", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,
@@ -68,6 +81,7 @@ async def health(session: AsyncSession = Depends(get_session)) -> dict[str, Any]
         "connectedDevices": await device_hub.connected_ids(),
         "authMode": settings.auth_mode,
         "serverConfigVersion": settings.server_config_version,
+        "telegramAlertsConfigured": settings.telegram_alerts_configured,
     }
 
 
@@ -108,6 +122,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
                     "lastWateredAt": event.started_at.isoformat() if event else None,
                 }
             )
+    tank_state = await session.get(MainTankState, device.id)
     connected = device.id in await device_hub.connected_ids()
     return {
         "id": device.id,
@@ -119,6 +134,8 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
         "automaticWateringEnabled": device.automatic_watering_enabled,
         "lastSeenAt": device.last_seen_at.isoformat(),
         "wifiRssi": wifi_rssi,
+        "mainTankLow": tank_state.is_low if tank_state is not None else None,
+        "mainTankLastChangedAt": tank_state.last_changed_at.isoformat() if tank_state is not None else None,
         "zones": zones,
     }
 
@@ -366,6 +383,44 @@ async def update_watering_event(
             event.status = "completed"
 
 
+async def update_main_tank_state(
+    session: AsyncSession,
+    device_id: str,
+    is_low: bool | None,
+    received_at: datetime,
+) -> None:
+    if is_low is None:
+        return
+
+    state = await session.get(MainTankState, device_id)
+    if state is None:
+        session.add(
+            MainTankState(
+                device_id=device_id,
+                is_low=is_low,
+                last_changed_at=received_at,
+                last_reported_at=received_at,
+            )
+        )
+        if is_low:
+            session.add(
+                MainTankAlert(
+                    device_id=device_id, is_low=True, observed_at=received_at
+                )
+            )
+        return
+
+    state.last_reported_at = received_at
+    if state.is_low != is_low:
+        state.is_low = is_low
+        state.last_changed_at = received_at
+        session.add(
+            MainTankAlert(
+                device_id=device_id, is_low=is_low, observed_at=received_at
+            )
+        )
+
+
 async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
     received_at = utcnow()
     async with SessionLocal() as session:
@@ -388,6 +443,9 @@ async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
         session.add(sample)
         try:
             await session.flush()
+            await update_main_tank_state(
+                session, message.device_id, message.main_tank_low, received_at
+            )
             for zone in message.zones:
                 await update_watering_event(session, message.device_id, zone.id, zone.relay_on, received_at)
                 session.add(
@@ -412,6 +470,55 @@ async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
             return None
         device = await session.get(Device, message.device_id)
         return await latest_snapshot(session, device)
+
+
+async def deliver_pending_main_tank_alert(device_id: str) -> None:
+    if not settings.telegram_alerts_configured:
+        return
+
+    async with SessionLocal() as session:
+        result = await session.execute(
+            select(MainTankAlert)
+            .where(
+                MainTankAlert.device_id == device_id,
+                MainTankAlert.sent_at.is_(None),
+            )
+            .order_by(MainTankAlert.observed_at, MainTankAlert.id)
+            .limit(1)
+        )
+        alert = result.scalar_one_or_none()
+        if alert is None:
+            return
+        alert_id = alert.id
+        is_low = alert.is_low
+
+    try:
+        await send_main_tank_alert(
+            bot_token=settings.telegram_bot_token,
+            chat_id=settings.telegram_chat_id,
+            device_id=device_id,
+            is_low=is_low,
+        )
+    except Exception as exc:
+        # Do not include the request URL in logs because it contains the bot token.
+        logger.error(
+            "failed to send main-tank Telegram alert device_id=%s error_type=%s",
+            device_id,
+            type(exc).__name__,
+        )
+        async with SessionLocal() as session:
+            alert = await session.get(MainTankAlert, alert_id)
+            if alert is not None and alert.sent_at is None:
+                alert.attempts += 1
+                await session.commit()
+        return
+
+    async with SessionLocal() as session:
+        alert = await session.get(MainTankAlert, alert_id)
+        if alert is not None and alert.sent_at is None:
+            alert.sent_at = utcnow()
+            alert.attempts += 1
+            await session.commit()
 
 
 async def record_command_ack(device_id: str, message: CommandAck) -> None:
@@ -476,6 +583,7 @@ async def device_websocket(websocket: WebSocket) -> None:
                     snapshot = await record_telemetry(telemetry)
                     if snapshot is not None:
                         await dashboard_hub.broadcast({"type": "telemetry", "device": snapshot})
+                        await deliver_pending_main_tank_alert(device_id)
                 elif message_type == "command.ack":
                     ack = CommandAck.model_validate(raw)
                     if ack.device_id == device_id:
@@ -520,4 +628,3 @@ async def dashboard_websocket(websocket: WebSocket) -> None:
         pass
     finally:
         await dashboard_hub.unregister(websocket)
-

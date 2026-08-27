@@ -9,7 +9,7 @@ namespace watering {
 
 namespace {
 
-constexpr char FIRMWARE_VERSION[] = "0.2.0";
+constexpr char FIRMWARE_VERSION[] = "0.3.0";
 
 bool hasZoneConfigFields(JsonObjectConst zone) {
   return zone["id"].is<uint8_t>() && zone["enabled"].is<bool>() &&
@@ -39,6 +39,15 @@ void NetworkManager::begin() {
 
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
+  WiFi.onEvent(
+      [](arduino_event_id_t, arduino_event_info_t info) {
+        const uint8_t reason = info.wifi_sta_disconnected.reason;
+        Serial.printf("Wi-Fi station disconnected: %s (reason %u)\n",
+                      WiFi.disconnectReasonName(
+                          static_cast<wifi_err_reason_t>(reason)),
+                      static_cast<unsigned>(reason));
+      },
+      ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.mode(WIFI_STA);
 
   webSocket_.onEvent(
@@ -99,6 +108,8 @@ void NetworkManager::handleWifi(uint32_t now) {
 
   if (!connected &&
       now - lastWifiAttemptAt_ >= WIFI_CONNECT_TIMEOUT_MS + wifiRetryMs_) {
+    Serial.printf("Wi-Fi still not connected (status %d); retrying\n",
+                  static_cast<int>(WiFi.status()));
     startWifiAttempt(now);
     wifiRetryMs_ = min(wifiRetryMs_ * 2, WIFI_RETRY_MAX_MS);
   }
@@ -414,6 +425,7 @@ void NetworkManager::sendTelemetry(uint32_t now) {
   document["uptimeMs"] = now;
   document["configRevision"] = config_.revision;
   document["wifiRssi"] = WiFi.RSSI();
+  document["mainTankLow"] = controller_.mainTankLow();
 
   JsonArray zones = document["zones"].to<JsonArray>();
   for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {

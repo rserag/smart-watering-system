@@ -6,7 +6,8 @@ namespace watering {
 
 WateringController::WateringController(
     const uint8_t (&relayPins)[ZONE_COUNT],
-    const uint8_t (&sensorPins)[ZONE_COUNT]) {
+    const uint8_t (&sensorPins)[ZONE_COUNT], uint8_t mainTankLevelPin)
+    : mainTankLevelPin_(mainTankLevelPin) {
   memcpy(relayPins_, relayPins, sizeof(relayPins_));
   memcpy(sensorPins_, sensorPins, sizeof(sensorPins_));
 }
@@ -23,12 +24,20 @@ void WateringController::begin(const SystemConfig &config) {
     analogSetPinAttenuation(sensorPins_[zone], ADC_11db);
   }
 
+  // The float switch connects this pin to GND while the tank has water.
+  // An open circuit, including a broken wire, therefore engages the interlock.
+  pinMode(mainTankLevelPin_, INPUT_PULLUP);
+  mainTankLow_ = digitalRead(mainTankLevelPin_) == HIGH;
+  pendingMainTankLow_ = mainTankLow_;
+  tankLevelTransitionStartedAt_ = millis();
+
   initializeRelaySafetyTimer();
   resetRuntimeState(millis());
 }
 
 void WateringController::loop(uint32_t now) {
   handleRelaySafetyCutoff();
+  updateMainTankLevel(now);
 
   if (!hasSampled_ || now - lastSampleAt_ >= config_.sampleIntervalMs) {
     sampleAllSensors(now);
@@ -68,6 +77,10 @@ bool WateringController::requestManualWater(size_t zone, uint32_t durationMs,
   }
   if (!config_.zones[zone].enabled) {
     error = "zone is disabled";
+    return false;
+  }
+  if (mainTankLow_) {
+    error = "main tank water is low";
     return false;
   }
   if (!sensors_[zone].valid || zones_[zone].phase == ZonePhase::Fault) {
@@ -167,6 +180,8 @@ bool WateringController::consumeStateChanged() {
 
 int8_t WateringController::activeZone() const { return activeZone_; }
 
+bool WateringController::mainTankLow() const { return mainTankLow_; }
+
 uint16_t WateringController::readAveragedRaw(uint8_t pin) {
   // The first conversion after changing ADC channels can contain residue.
   analogRead(pin);
@@ -178,6 +193,47 @@ uint16_t WateringController::readAveragedRaw(uint8_t pin) {
     delayMicroseconds(50);
   }
   return total / SAMPLES_PER_READING;
+}
+
+void WateringController::updateMainTankLevel(uint32_t now) {
+  const bool observedLow = digitalRead(mainTankLevelPin_) == HIGH;
+  if (observedLow != pendingMainTankLow_) {
+    pendingMainTankLow_ = observedLow;
+    tankLevelTransitionStartedAt_ = now;
+    return;
+  }
+
+  const uint32_t debounceMs = observedLow ? TANK_LOW_DEBOUNCE_MS
+                                          : TANK_RESTORED_DEBOUNCE_MS;
+  if (observedLow == mainTankLow_ ||
+      now - tankLevelTransitionStartedAt_ < debounceMs) {
+    return;
+  }
+
+  mainTankLow_ = observedLow;
+  stateChanged_ = true;
+  if (mainTankLow_) {
+    Serial.println("Main tank LOW: stopping and blocking all watering");
+    engageMainTankInterlock(now);
+  } else {
+    Serial.println("Main tank level restored: watering interlock cleared");
+  }
+}
+
+void WateringController::engageMainTankInterlock(uint32_t now) {
+  for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
+    setRelay(zone, false);
+    zones_[zone].manualRequest = false;
+    zones_[zone].wateringOnMsThisCycle = 0;
+    zones_[zone].consecutiveDryReadings = 0;
+    zones_[zone].consecutiveWetReadings = 0;
+    if (zones_[zone].phase != ZonePhase::Fault) {
+      setPhase(zone,
+               config_.zones[zone].enabled ? ZonePhase::Monitoring
+                                           : ZonePhase::Disabled,
+               now);
+    }
+  }
 }
 
 void WateringController::sampleAllSensors(uint32_t now) {
@@ -266,7 +322,7 @@ void WateringController::evaluateZoneAfterSample(size_t zone, uint32_t now) {
 
   if (state.phase == ZonePhase::Monitoring ||
       state.phase == ZonePhase::DryConfirming) {
-    if (!config_.automaticWateringEnabled) {
+    if (!config_.automaticWateringEnabled || mainTankLow_) {
       state.consecutiveDryReadings = 0;
       if (state.phase == ZonePhase::DryConfirming) {
         setPhase(zone, ZonePhase::Monitoring, now);
@@ -343,7 +399,7 @@ void WateringController::updateTimedStates(uint32_t now) {
 }
 
 void WateringController::scheduleNextZone(uint32_t now) {
-  if (activeZone_ >= 0) {
+  if (activeZone_ >= 0 || mainTankLow_) {
     return;
   }
 
@@ -367,6 +423,12 @@ void WateringController::scheduleNextZone(uint32_t now) {
 void WateringController::startQueuedZone(size_t zone, uint32_t now) {
   ZoneState &state = zones_[zone];
   const ZoneConfig &zoneConfig = config_.zones[zone];
+
+  if (mainTankLow_) {
+    state.manualRequest = false;
+    setPhase(zone, ZonePhase::Monitoring, now);
+    return;
+  }
 
   if (!zoneConfig.enabled || !sensors_[zone].valid) {
     markFault(zone, FaultCode::SensorInvalid, now);

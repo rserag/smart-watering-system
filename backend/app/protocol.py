@@ -38,6 +38,7 @@ class TelemetryMessage(BaseModel):
     uptime_ms: int = Field(alias="uptimeMs", ge=0)
     config_revision: int = Field(alias="configRevision", ge=0)
     wifi_rssi: int = Field(alias="wifiRssi", ge=-127, le=0)
+    main_tank_low: bool | None = Field(default=None, alias="mainTankLow")
     zones: list[ZoneTelemetry] = Field(min_length=1, max_length=16)
 
 
