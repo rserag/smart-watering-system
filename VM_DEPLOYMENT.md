@@ -72,10 +72,9 @@ The remote `.env` must be mode 600. Do not display its values. Public cutover re
 https://watering.sibex.zip/auth/google/callback
 ```
 
-Main-tank notifications additionally require non-empty `TELEGRAM_BOT_TOKEN`
-and `TELEGRAM_CHAT_ID` values in that protected `.env`. Restart the backend
-after adding them; `/health` reports `telegramAlertsConfigured: true` without
-exposing either value.
+Telegram is delivered directly by the ESP32 and does not require credentials on
+the VM. `/health` reports `telegramDelivery: device-direct`; the dashboard shows
+the non-secret configuration and delivery state reported by the controller.
 
 Do not publicly enable the host Nginx site while `AUTH_MODE=development` is active.
 

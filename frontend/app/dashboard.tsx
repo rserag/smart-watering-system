@@ -11,9 +11,22 @@ type Device = {
   id: string; online: boolean; firmwareVersion: string | null; bootId: string | null; schemaVersion: number;
   configRevision: number; automaticWateringEnabled: boolean; lastSeenAt: string; wifiRssi: number | null;
   mainTankLow: boolean | null; mainTankLastChangedAt: string | null; zones: Zone[];
+  directTelegram: boolean; telegramDebugEnabled: boolean; telegramConfigured: boolean;
+  telegramPendingMessages: number; telegramLastSendSucceeded: boolean;
+  telegramWorkerRunning: boolean; telegramTimeReady: boolean; telegramLastFailureStage: string | null;
 };
 type HistoryPoint = { timestamp: string; average: number; minimum: number; maximum: number; samples: number };
 type WateringEvent = { id: number; zoneId: number; startedAt: string; endedAt: string | null; durationMs: number | null; source: string; status: string };
+type TelegramDelivery = {
+  eventId: string; deviceId: string; requestId: string | null; kind: string; status: string;
+  updateSequence: number; attempt: number; pendingCount: number; httpStatus: number | null;
+  errorStage: string | null; telegramErrorCode: number | null; telegramMessageId: number | null;
+  updatedAt: string; sentAt: string | null;
+};
+
+function telegramKind(value: string) {
+  return ({ manual_debug: 'Manual debug', hourly_debug: 'Hourly debug', pump_started: 'Pump started', tank_low: 'Tank low', tank_restored: 'Tank restored' } as Record<string, string>)[value] ?? value;
+}
 
 function formatTime(value: string | null) {
   if (!value) return '—';
@@ -82,10 +95,17 @@ export default function Dashboard() {
   const [events, setEvents] = useState<WateringEvent[]>([]);
   const [error, setError] = useState('');
   const [loadingHistory, setLoadingHistory] = useState(false);
+  const [savingTelegram, setSavingTelegram] = useState(false);
+  const [sendingTelegramDebug, setSendingTelegramDebug] = useState(false);
+  const [telegramDeliveries, setTelegramDeliveries] = useState<TelegramDelivery[]>([]);
 
-  const fetchJson = useCallback(async <T,>(path: string): Promise<T> => {
-    const response = await fetch(path, { credentials: 'include' });
-    if (!response.ok) throw new Error(response.status === 401 ? 'Authentication required' : `Request failed (${response.status})`);
+  const fetchJson = useCallback(async <T,>(path: string, init?: RequestInit): Promise<T> => {
+    const response = await fetch(path, { ...init, credentials: 'include' });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = String(((await response.json()) as { detail?: unknown }).detail ?? ''); } catch { /* Response was not JSON. */ }
+      throw new Error(response.status === 401 ? 'Authentication required' : detail || `Request failed (${response.status})`);
+    }
     return response.json() as Promise<T>;
   }, []);
 
@@ -113,6 +133,11 @@ export default function Dashboard() {
       if (message.type === 'snapshot') {
         setDevices(message.devices);
         setSelectedId((current) => current || message.devices[0]?.id || '');
+      } else if (message.type === 'telegram.delivery' && message.delivery) {
+        setTelegramDeliveries((current) => {
+          const next = current.filter((delivery) => delivery.eventId !== message.delivery.eventId);
+          return [message.delivery, ...next].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()).slice(0, 50);
+        });
       } else if (message.device) {
         setDevices((current) => {
           const next = current.filter((device) => device.id !== message.device.id);
@@ -127,6 +152,46 @@ export default function Dashboard() {
   const range = useMemo(() => historyRange(period), [period]);
   const selected = devices.find((device) => device.id === selectedId) ?? devices[0];
   const historyDeviceId = selected?.id;
+
+  const setTelegramDebug = useCallback(async (enabled: boolean) => {
+    if (!selected) return;
+    setSavingTelegram(true);
+    try {
+      await fetchJson<{ commandId: string; status: string }>(`/api/devices/${encodeURIComponent(selected.id)}/commands`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command: 'telegram.debug.set', parameters: { enabled } }),
+      });
+      setDevices((current) => current.map((device) => device.id === selected.id ? { ...device, telegramDebugEnabled: enabled } : device));
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to update Telegram debug');
+    } finally {
+      setSavingTelegram(false);
+    }
+  }, [selected, fetchJson]);
+
+  const sendTelegramDebug = useCallback(async () => {
+    if (!selected) return;
+    setSendingTelegramDebug(true);
+    try {
+      await fetchJson<{ commandId: string; status: string }>(`/api/devices/${encodeURIComponent(selected.id)}/telegram/debug`, { method: 'POST' });
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Unable to send Telegram debug report');
+    } finally {
+      setSendingTelegramDebug(false);
+    }
+  }, [selected, fetchJson]);
+
+  useEffect(() => {
+    if (!me?.authenticated || !historyDeviceId) return;
+    let active = true;
+    fetchJson<TelegramDelivery[]>(`/api/devices/${encodeURIComponent(historyDeviceId)}/telegram/deliveries?limit=50`)
+      .then((data) => { if (active) setTelegramDeliveries(data); })
+      .catch((reason) => { if (active) setError(reason instanceof Error ? reason.message : 'Unable to load Telegram history'); });
+    return () => { active = false; };
+  }, [me?.authenticated, historyDeviceId, fetchJson]);
 
   useEffect(() => {
     if (view !== 'history' || !historyDeviceId) return;
@@ -161,6 +226,9 @@ export default function Dashboard() {
   const zones = selected?.zones ?? [];
   const displayZones = Array.from({ length: 4 }, (_, index) => zones.find((zone) => zone.id === index + 1));
   const exportQuery = new URLSearchParams({ from: range.from.toISOString(), to: range.to.toISOString(), zone_id: String(zoneId) });
+  const selectedTelegramDeliveries = telegramDeliveries.filter((delivery) => delivery.deviceId === selected?.id);
+  const lastTelegramDelivery = selectedTelegramDeliveries[0];
+  const lastTelegramSuccess = selectedTelegramDeliveries.find((delivery) => delivery.status === 'sent');
 
   return (
     <main className="garden-app">
@@ -179,6 +247,11 @@ export default function Dashboard() {
             <header className="garden-page-header"><div><p className="garden-eyebrow">Watering system</p><h1>Garden status</h1><p>Configuration revision {selected.configRevision} · Firmware {selected.firmwareVersion}</p></div><div className={selected.online ? 'garden-live' : 'garden-live garden-offline'}><span />{selected.online ? 'Live' : `Last seen ${formatTime(selected.lastSeenAt)}`}</div></header>
             {selected.mainTankLow && <div className="garden-tank-alert" role="alert"><strong>Main tank water is low</strong><span>All watering is stopped until the tank is refilled.</span></div>}
             <div className="garden-stats"><article><p>Controller</p><strong>{selected.online ? 'Online' : 'Offline'}</strong><small>{selected.id}</small></article><article className={selected.mainTankLow ? 'garden-stat-danger' : ''}><p>Main tank</p><strong>{selected.mainTankLow === null ? 'Waiting' : selected.mainTankLow ? 'Low' : 'Ready'}</strong><small>{selected.mainTankLow === null ? 'No level reading yet' : `Changed ${formatTime(selected.mainTankLastChangedAt)}`}</small></article><article><p>Automatic watering</p><strong>{selected.automaticWateringEnabled ? 'Enabled' : 'Disabled'}</strong><small>{selected.mainTankLow ? 'Blocked by tank safety' : 'Local safety remains active'}</small></article><article><p>Wi-Fi signal</p><strong>{selected.wifiRssi === null ? '—' : `${selected.wifiRssi} dBm`}</strong><small>{selected.wifiRssi !== null && selected.wifiRssi > -67 ? 'Good connection' : 'Check signal quality'}</small></article></div>
+            <section className="garden-notifications" aria-labelledby="telegram-heading">
+              <div className="garden-telegram-heading"><div><p className="garden-eyebrow">Notifications</p><h2 id="telegram-heading">Telegram</h2><p>The ESP32 sends directly. Hourly and pump messages follow the debug toggle; low-tank alerts are always enabled.</p></div><div className="garden-telegram-actions"><div className="garden-telegram-control"><button type="button" role="switch" aria-checked={selected.telegramDebugEnabled} className={selected.telegramDebugEnabled ? 'garden-switch garden-switch-on' : 'garden-switch'} disabled={!selected.online || !selected.directTelegram || savingTelegram} onClick={() => void setTelegramDebug(!selected.telegramDebugEnabled)}><span /></button><strong>{savingTelegram ? 'Saving…' : selected.telegramDebugEnabled ? 'Debug on' : 'Debug off'}</strong></div><button className="garden-debug-send" disabled={!selected.online || !selected.directTelegram || !selected.telegramConfigured || !selected.telegramWorkerRunning || sendingTelegramDebug} onClick={() => void sendTelegramDebug()}>{sendingTelegramDebug ? 'Queuing…' : 'Send debug now'}</button></div></div>
+              <dl className="garden-telegram-health"><div><dt>Controller</dt><dd>{!selected.directTelegram ? 'Firmware update required' : selected.online ? 'Online' : 'Offline'}</dd></div><div><dt>Bot</dt><dd>{selected.telegramConfigured ? 'Configured' : 'Missing credentials'}</dd></div><div><dt>Sender</dt><dd>{selected.telegramWorkerRunning ? 'Running' : 'Stopped'}</dd></div><div><dt>Secure clock</dt><dd>{selected.telegramTimeReady ? 'Ready' : 'Synchronizing'}</dd></div><div><dt>Queue</dt><dd>{selected.telegramPendingMessages} pending</dd></div><div><dt>Last success</dt><dd>{lastTelegramSuccess ? formatTime(lastTelegramSuccess.sentAt) : 'None yet'}</dd></div><div><dt>Last issue</dt><dd>{selected.telegramLastFailureStage ?? 'None reported'}</dd></div></dl>
+              <div className="garden-telegram-history"><div className="garden-telegram-history-head"><strong>Recent interactions</strong><span>{lastTelegramDelivery ? `Latest: ${lastTelegramDelivery.status}` : 'No reports from the controller yet'}</span></div>{selectedTelegramDeliveries.length ? selectedTelegramDeliveries.slice(0, 8).map((delivery) => <div className="garden-telegram-row" key={delivery.eventId}><span>{formatTime(delivery.updatedAt)}</span><strong>{telegramKind(delivery.kind)}</strong><span className={`garden-delivery-status garden-delivery-${delivery.status}`}>{delivery.status.replace('_', ' ')}</span><span>{delivery.attempt} attempt{delivery.attempt === 1 ? '' : 's'}</span><small>{delivery.status === 'sent' ? `Message ${delivery.telegramMessageId ?? 'sent'}` : delivery.errorStage ? `${delivery.errorStage}${delivery.telegramErrorCode ? ` (${delivery.telegramErrorCode})` : ''}` : delivery.httpStatus ? `HTTP ${delivery.httpStatus}` : 'Waiting on controller'}</small></div>) : <div className="garden-telegram-empty">Use “Send debug now” to test the complete ESP32-to-Telegram path.</div>}</div>
+            </section>
             <div className="garden-section-heading"><div><h2>Zones</h2><p>Live conditions and controller state</p></div></div>
             <div className="garden-zones">{displayZones.map((zone, index) => (
               <article className="garden-zone" key={index}><div className="garden-zone-title"><h3>Zone {index + 1}{index === 0 ? ' · Tomatoes' : ''}</h3><span className={zone?.relayOn ? 'garden-status-watering' : zone ? 'garden-status-on' : 'garden-status-off'}>{zone?.relayOn ? 'Watering' : zone?.phase ?? 'No data'}</span></div><div className="garden-zone-body"><div className={zone ? 'garden-moisture garden-moisture-active' : 'garden-moisture'} style={zone ? { background: `conic-gradient(#50b56a 0 ${Math.max(0, Math.min(100, zone.moisturePercent))}%, #eef1ec ${Math.max(0, Math.min(100, zone.moisturePercent))}% 100%)` } : undefined}><strong>{zone ? `${Math.round(zone.moisturePercent)}%` : '—'}</strong><small>moisture</small></div><dl><div><dt>Sensor</dt><dd>{zone ? (zone.sensorValid ? 'Healthy' : 'Invalid') : 'Waiting'}</dd></div><div><dt>Relay</dt><dd>{zone?.relayOn ? 'On' : 'Off'}</dd></div><div><dt>Last watered</dt><dd>{formatTime(zone?.lastWateredAt ?? null)}</dd></div><div><dt>Fault</dt><dd>{zone?.fault ?? 'None'}</dd></div></dl></div></article>

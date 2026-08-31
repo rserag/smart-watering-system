@@ -29,6 +29,7 @@ void WateringController::begin(const SystemConfig &config) {
   pinMode(mainTankLevelPin_, INPUT);
   mainTankLow_ = digitalRead(mainTankLevelPin_) == LOW;
   pendingMainTankLow_ = mainTankLow_;
+  tankStateChanged_ = mainTankLow_;
   tankLevelTransitionStartedAt_ = millis();
   Serial.printf("Main tank GPIO %u: %s\n", mainTankLevelPin_,
                 mainTankLow_ ? "LOW WATER (LOW/closed)"
@@ -181,6 +182,24 @@ bool WateringController::consumeStateChanged() {
   return changed;
 }
 
+bool WateringController::consumeTankStateChanged(bool &isLow) {
+  if (!tankStateChanged_) {
+    return false;
+  }
+  tankStateChanged_ = false;
+  isLow = mainTankLow_;
+  return true;
+}
+
+bool WateringController::consumePumpStarted(PumpStartEvent &event) {
+  if (!pumpStarted_) {
+    return false;
+  }
+  pumpStarted_ = false;
+  event = pumpStartEvent_;
+  return true;
+}
+
 int8_t WateringController::activeZone() const { return activeZone_; }
 
 bool WateringController::mainTankLow() const { return mainTankLow_; }
@@ -215,6 +234,7 @@ void WateringController::updateMainTankLevel(uint32_t now) {
 
   mainTankLow_ = observedLow;
   stateChanged_ = true;
+  tankStateChanged_ = true;
   if (mainTankLow_) {
     Serial.println("Main tank LOW: stopping and blocking all watering");
     engageMainTankInterlock(now);
@@ -446,6 +466,10 @@ void WateringController::startQueuedZone(size_t zone, uint32_t now) {
     state.activePulseMs = state.manualDurationMs;
     setRelay(zone, true);
     setPhase(zone, ZonePhase::ManualWatering, now);
+    pumpStartEvent_ = PumpStartEvent{
+        static_cast<uint8_t>(zone + 1), true, state.activePulseMs,
+        sensors_[zone].moisturePercent};
+    pumpStarted_ = true;
     return;
   }
 
@@ -459,6 +483,10 @@ void WateringController::startQueuedZone(size_t zone, uint32_t now) {
   state.activePulseMs = std::min(zoneConfig.pulseOnMs, remaining);
   setRelay(zone, true);
   setPhase(zone, ZonePhase::Watering, now);
+  pumpStartEvent_ = PumpStartEvent{
+      static_cast<uint8_t>(zone + 1), false, state.activePulseMs,
+      sensors_[zone].moisturePercent};
+  pumpStarted_ = true;
 }
 
 void WateringController::setRelay(size_t zone, bool on) {

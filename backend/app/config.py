@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     allowed_google_emails: str = ""
     frontend_url: str = "http://localhost:3000"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
-    telegram_bot_token: str = ""
-    telegram_chat_id: str = ""
 
     @property
     def allowed_email_set(self) -> set[str]:
@@ -34,11 +32,6 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [item.strip() for item in self.cors_origins.split(",") if item.strip()]
-
-    @property
-    def telegram_alerts_configured(self) -> bool:
-        return bool(self.telegram_bot_token.strip() and self.telegram_chat_id.strip())
-
 
 @lru_cache
 def get_settings() -> Settings:

@@ -39,6 +39,14 @@ def telemetry(sequence: int, relay_on: bool, moisture: float) -> dict:
         "configRevision": 7,
         "wifiRssi": -58,
         "mainTankLow": False,
+        "directTelegram": True,
+        "telegramDebugEnabled": True,
+        "telegramConfigured": True,
+        "telegramPendingMessages": 0,
+        "telegramLastSendSucceeded": True,
+        "telegramWorkerRunning": True,
+        "telegramTimeReady": True,
+        "telegramLastFailureStage": None,
         "zones": [zone(index, relay_on if index == 1 else False, moisture + index) for index in range(1, 5)],
     }
 
@@ -95,6 +103,11 @@ async def main() -> None:
                             "bootId": BOOT_ID,
                             "configRevision": 7,
                             "automaticWateringEnabled": True,
+                            "directTelegram": True,
+                            "telegramDebugEnabled": True,
+                            "telegramConfigured": True,
+                            "telegramWorkerRunning": True,
+                            "telegramTimeReady": True,
                             "uptimeMs": 100,
                         }
                     )
@@ -132,6 +145,51 @@ async def main() -> None:
                     )
                 )
 
+                telegram_response = await client.post(
+                    f"{base}/api/devices/e2e-dashboard-device/telegram/debug"
+                )
+                assert telegram_response.status_code == 202, telegram_response.text
+                telegram_command = json.loads(await device.recv())
+                assert telegram_command["type"] == "telegram.debug.send", telegram_command
+                await device.send(
+                    json.dumps(
+                        {
+                            "type": "command.ack",
+                            "schemaVersion": 1,
+                            "deviceId": "e2e-dashboard-device",
+                            "requestId": telegram_command["requestId"],
+                            "command": telegram_command["type"],
+                            "status": "accepted",
+                        }
+                    )
+                )
+                delivery_event_id = f"{BOOT_ID}:telegram:1"
+                for update_sequence, status in ((1, "queued"), (2, "sent")):
+                    await device.send(
+                        json.dumps(
+                            {
+                                "type": "telegram.delivery",
+                                "schemaVersion": 1,
+                                "deviceId": "e2e-dashboard-device",
+                                "eventId": delivery_event_id,
+                                "requestId": telegram_command["requestId"],
+                                "updateSequence": update_sequence,
+                                "kind": "manual_debug",
+                                "status": status,
+                                "attempt": 0 if status == "queued" else 1,
+                                "uptimeMs": 3000 + update_sequence,
+                                "pendingCount": 0,
+                                "httpStatus": 200 if status == "sent" else None,
+                                "telegramMessageId": 42 if status == "sent" else None,
+                            }
+                        )
+                    )
+                    delivery_ack = json.loads(await device.recv())
+                    assert delivery_ack["type"] == "telegram.delivery.ack", delivery_ack
+                    live_delivery = json.loads(await dashboard.recv())
+                    assert live_delivery["type"] == "telegram.delivery", live_delivery
+                    assert live_delivery["delivery"]["status"] == status, live_delivery
+
             disconnected = json.loads(await dashboard.recv())
             assert disconnected["type"] == "device.status", disconnected
 
@@ -155,6 +213,12 @@ async def main() -> None:
             params={"from": params["from"], "to": params["to"], "zone_id": 1},
         )
         assert export.status_code == 200 and "moisture_percent" in export.text, export.text
+        deliveries = await client.get(
+            f"{base}/api/devices/e2e-dashboard-device/telegram/deliveries"
+        )
+        assert deliveries.status_code == 200, deliveries.text
+        assert deliveries.json()[0]["status"] == "sent", deliveries.text
+        assert deliveries.json()[0]["telegramMessageId"] == 42, deliveries.text
 
     print(
         json.dumps(
@@ -167,6 +231,8 @@ async def main() -> None:
                 "watering_events": "ok",
                 "csv_export": "ok",
                 "command_round_trip": "ok",
+                "telegram_debug_command": "ok",
+                "telegram_delivery_history": "ok",
             },
             indent=2,
         )

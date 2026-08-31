@@ -92,19 +92,30 @@ low water. With this polarity, a disconnected tank wire reads as safe. After a
 automatic and manual watering. A safe level must remain stable for two seconds
 before watering can resume.
 
-Telegram alerts are sent by the backend on the low-water and restored
-transitions. Create a bot with Telegram's `@BotFather`, send the bot one message,
-and obtain the destination chat ID from the bot API `getUpdates` response. Add
-these values to the backend environment and restart it:
+Telegram alerts are sent directly by the ESP32, so tank notifications and
+optional debug messages continue if the backend is unavailable. Create a bot
+with Telegram's `@BotFather`, send the bot one message, and obtain the
+destination chat ID from the bot API `getUpdates` response. Configure the
+excluded `watering-system-iot/include/secrets.h` before building:
 
-```dotenv
-TELEGRAM_BOT_TOKEN=123456:replace-with-real-token
-TELEGRAM_CHAT_ID=replace-with-your-chat-id
+```cpp
+constexpr bool TELEGRAM_ENABLED = true;
+constexpr char TELEGRAM_BOT_TOKEN[] = "123456:replace-with-real-token";
+constexpr char TELEGRAM_CHAT_ID[] = "replace-with-your-chat-id";
 ```
 
-If Telegram is temporarily unavailable, the transition remains pending and is
-retried on later telemetry. The hardware cutoff does not depend on Wi-Fi,
-Telegram, or the backend.
+Low-tank and restored transitions are always sent. The website's Telegram debug
+toggle additionally enables pump-start messages and an hourly controller
+report. Telegram delivery runs in a separate firmware task and retries without
+blocking local control. The hardware cutoff does not depend on Wi-Fi, Telegram,
+or the backend.
+
+The Telegram panel also has a **Send debug now** action. It asks the online
+ESP32 to send one report directly to Telegram; it does not enable recurring
+debug messages. The controller reports queued, sending, retry, success, and
+failure states back to the backend. Up to 16 latest unacknowledged results are
+kept in ESP32 flash and replayed after the backend reconnects, without exposing
+the bot token or chat ID.
 
 ## Dashboard data
 
@@ -120,11 +131,17 @@ Useful endpoints:
 - `GET /api/devices`
 - `GET /api/devices/{id}/history`
 - `GET /api/devices/{id}/events`
+- `GET /api/devices/{id}/telegram/deliveries`
+- `POST /api/devices/{id}/telegram/debug`
 - `GET /api/devices/{id}/history.csv`
 
 ## Verification
 
-The integration verifier exercises local login, invalid device-token rejection, the exact ESP32 hello/telemetry protocol, dashboard live updates, command acknowledgement, historical aggregation, derived watering events, and CSV export:
+The integration verifier exercises local login, invalid device-token rejection,
+the exact ESP32 protocol, dashboard live updates, command acknowledgement,
+historical aggregation, derived watering events, CSV export, the one-shot
+Telegram command, delivery acknowledgements, and persisted Telegram interaction
+history:
 
 ```sh
 cd backend

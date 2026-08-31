@@ -3,13 +3,12 @@
 #include <WiFi.h>
 #include <esp_system.h>
 
+#include "firmware_info.h"
 #include "secrets.h"
 
 namespace watering {
 
 namespace {
-
-constexpr char FIRMWARE_VERSION[] = "0.4.0";
 
 bool hasZoneConfigFields(JsonObjectConst zone) {
   return zone["id"].is<uint8_t>() && zone["enabled"].is<bool>() &&
@@ -26,8 +25,12 @@ bool hasZoneConfigFields(JsonObjectConst zone) {
 }  // namespace
 
 NetworkManager::NetworkManager(WateringController &controller,
-                               ConfigStore &configStore, SystemConfig &config)
-    : controller_(controller), configStore_(configStore), config_(config) {}
+                               ConfigStore &configStore, SystemConfig &config,
+                               TelegramNotifier &telegram)
+    : controller_(controller),
+      configStore_(configStore),
+      config_(config),
+      telegram_(telegram) {}
 
 void NetworkManager::begin() {
   const uint64_t chipId = ESP.getEfuseMac();
@@ -36,6 +39,7 @@ void NetworkManager::begin() {
            static_cast<unsigned long>(chipId & 0xFFFFFFFF),
            static_cast<unsigned>(esp_random() & 0xFFFF));
   bootId_ = bootId;
+  telegram_.setBootId(bootId_);
 
   WiFi.persistent(false);
   WiFi.setAutoReconnect(false);
@@ -73,6 +77,9 @@ void NetworkManager::loop(uint32_t now) {
   if (webSocketConnected_ &&
       (stateChanged || now - lastTelemetryAt_ >= config_.telemetryIntervalMs)) {
     sendTelemetry(now);
+  }
+  if (webSocketConnected_) {
+    sendTelegramDeliveryReport();
   }
 }
 
@@ -165,6 +172,7 @@ void NetworkManager::handleWebSocketEvent(WStype_t type, uint8_t *payload,
     case WStype_CONNECTED:
       webSocketConnected_ = true;
       Serial.println("WebSocket connected");
+      telegram_.replayDeliveryReports();
       sendHello();
       sendTelemetry(millis());
       break;
@@ -216,10 +224,18 @@ void NetworkManager::handleIncomingText(const uint8_t *payload, size_t length) {
 
   if (strcmp(type, "config.set") == 0) {
     handleConfigSet(root);
+  } else if (strcmp(type, "telegram.delivery.ack") == 0) {
+    const char *eventId = root["eventId"] | "";
+    const uint32_t updateSequence = root["updateSequence"] | 0;
+    if (eventId[0] != '\0' && updateSequence > 0) {
+      telegram_.acknowledgeDelivery(eventId, updateSequence);
+    }
   } else if (strcmp(type, "zone.water") == 0 ||
              strcmp(type, "zone.stop") == 0 ||
              strcmp(type, "system.stopAll") == 0 ||
              strcmp(type, "fault.clear") == 0 ||
+             strcmp(type, "telegram.debug.set") == 0 ||
+             strcmp(type, "telegram.debug.send") == 0 ||
              strcmp(type, "telemetry.request") == 0 ||
              strcmp(type, "config.get") == 0) {
     handleCommand(root, type);
@@ -363,6 +379,36 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
   } else if (strcmp(type, "config.get") == 0) {
     sendConfigSnapshot(requestId);
     success = true;
+  } else if (strcmp(type, "telegram.debug.set") == 0) {
+    if (!root["enabled"].is<bool>()) {
+      error = "enabled must be a boolean";
+    } else {
+      const bool enabled = root["enabled"].as<bool>();
+      success = configStore_.saveTelegramDebugEnabled(enabled);
+      if (success) {
+        telegram_.setDebugEnabled(enabled, millis());
+      } else {
+        error = "failed to persist Telegram debug setting";
+      }
+    }
+  } else if (strcmp(type, "telegram.debug.send") == 0) {
+    const time_t currentTime = time(nullptr);
+    const uint32_t expiresAt = root["expiresAtEpoch"] | 0;
+    if (!telegram_.configured()) {
+      error = "Telegram is not configured";
+    } else if (currentTime < 1700000000) {
+      error = "device time is not synchronized";
+    } else if (!root["expiresAtEpoch"].is<uint32_t>() ||
+               expiresAt <= static_cast<uint32_t>(currentTime) ||
+               expiresAt - static_cast<uint32_t>(currentTime) >
+                   COMMAND_MAX_FUTURE_SECONDS) {
+      error = "expiresAtEpoch must be within the next five minutes";
+    } else {
+      success = telegram_.requestDebugReport(requestId, millis());
+      if (!success) {
+        error = "failed to queue Telegram debug report";
+      }
+    }
   } else {
     const uint8_t zoneId = root["zoneId"] | 0;
     if (zoneId == 0 || zoneId > ZONE_COUNT) {
@@ -389,6 +435,9 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
 
   rememberRequest(requestId);
   sendCommandAck(requestId, type, success ? "accepted" : "rejected", error);
+  if (success && strcmp(type, "telegram.debug.set") == 0) {
+    sendTelemetry(millis());
+  }
 }
 
 bool NetworkManager::isDuplicateRequest(const String &requestId) const {
@@ -415,6 +464,11 @@ void NetworkManager::sendHello() {
   document["configRevision"] = config_.revision;
   document["automaticWateringEnabled"] =
       config_.automaticWateringEnabled;
+  document["directTelegram"] = true;
+  document["telegramDebugEnabled"] = telegram_.debugEnabled();
+  document["telegramConfigured"] = telegram_.configured();
+  document["telegramWorkerRunning"] = telegram_.workerRunning();
+  document["telegramTimeReady"] = telegram_.timeReady();
   document["uptimeMs"] = millis();
   sendJson(document);
 }
@@ -434,6 +488,18 @@ void NetworkManager::sendTelemetry(uint32_t now) {
   document["configRevision"] = config_.revision;
   document["wifiRssi"] = WiFi.RSSI();
   document["mainTankLow"] = controller_.mainTankLow();
+  document["directTelegram"] = true;
+  document["telegramDebugEnabled"] = telegram_.debugEnabled();
+  document["telegramConfigured"] = telegram_.configured();
+  document["telegramPendingMessages"] = telegram_.pendingCount();
+  document["telegramLastSendSucceeded"] = telegram_.lastSendSucceeded();
+  document["telegramWorkerRunning"] = telegram_.workerRunning();
+  document["telegramTimeReady"] = telegram_.timeReady();
+  if (telegram_.lastFailureStage()[0] == '\0') {
+    document["telegramLastFailureStage"] = nullptr;
+  } else {
+    document["telegramLastFailureStage"] = telegram_.lastFailureStage();
+  }
 
   JsonArray zones = document["zones"].to<JsonArray>();
   for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
@@ -457,6 +523,44 @@ void NetworkManager::sendTelemetry(uint32_t now) {
 
   if (sendJson(document)) {
     lastTelemetryAt_ = now;
+  }
+}
+
+void NetworkManager::sendTelegramDeliveryReport() {
+  TelegramDeliveryReport report{};
+  if (!telegram_.nextDeliveryReport(report)) {
+    return;
+  }
+
+  JsonDocument document;
+  document["type"] = "telegram.delivery";
+  document["schemaVersion"] = CONFIG_SCHEMA_VERSION;
+  document["deviceId"] = DEVICE_ID;
+  document["eventId"] = report.eventId;
+  document["updateSequence"] = report.updateSequence;
+  document["kind"] = report.kind;
+  document["status"] = report.status;
+  document["attempt"] = report.attempt;
+  document["uptimeMs"] = report.uptimeMs;
+  document["pendingCount"] = telegram_.pendingCount();
+  if (report.requestId[0] != '\0') {
+    document["requestId"] = report.requestId;
+  }
+  if (report.errorStage[0] != '\0') {
+    document["errorStage"] = report.errorStage;
+  }
+  if (report.httpStatus != 0) {
+    document["httpStatus"] = report.httpStatus;
+  }
+  if (report.telegramErrorCode != 0) {
+    document["telegramErrorCode"] = report.telegramErrorCode;
+  }
+  if (report.telegramMessageId != 0) {
+    document["telegramMessageId"] = report.telegramMessageId;
+  }
+  if (!sendJson(document)) {
+    telegram_.markDeliveryReportForRetry(report.eventId,
+                                         report.updateSequence);
   }
 }
 
