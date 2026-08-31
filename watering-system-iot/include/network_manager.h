@@ -15,6 +15,8 @@ class NetworkManager {
 
   void begin();
   void loop(uint32_t now);
+  bool wifiConnected() const;
+  bool backendConnected() const;
 
  private:
   static constexpr size_t MAX_MESSAGE_BYTES = 4096;

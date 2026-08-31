@@ -13,6 +13,26 @@ is unavailable.
 | 3 | 25 | 36 / VP |
 | 4 | 33 | 39 / VN |
 
+### OLED status display
+
+Connect a 0.96-inch 128 x 64 I2C OLED with an SSD1306 controller as follows:
+
+| OLED pin | ESP32 connection |
+| --- | --- |
+| VCC | 3.3 V |
+| GND | GND |
+| SDA | D21 / GPIO 21 |
+| SCL | D22 / GPIO 22 |
+
+The firmware uses I2C address `0x3C` at 400 kHz. Use the four-pin I2C version
+of the display, not the visually similar SPI version. Many OLED boards already
+include I2C pull-up resistors; any pull-ups must go to 3.3 V, never 5 V.
+
+The display shows the main-tank interlock, automatic/manual mode, Wi-Fi (`W`),
+backend WebSocket (`B`), moisture percentage, and controller state for all four
+zones. A plus sign means the corresponding connection is active. A missing or
+failed OLED is logged over serial and does not prevent local watering.
+
 The main-tank float switch uses D23 / GPIO 23 with an external 3.3 V pull-up:
 
 ```text

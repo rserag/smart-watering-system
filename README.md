@@ -69,6 +69,15 @@ cd watering-system-iot
 
 The firmware has not been flashed automatically because uploading can affect connected watering hardware. Flash it when the controller and valves are in a safe state.
 
+### OLED status display
+
+The firmware supports a 0.96-inch, 128 x 64 SSD1306 I2C OLED at address `0x3C`.
+Connect VCC to 3.3 V, GND to GND, SDA to D21 / GPIO 21, and SCL to D22 /
+GPIO 22. The screen shows tank, network, and four-zone moisture/controller
+status; watering continues safely if the OLED is missing. See the
+[`watering-system-iot` hardware guide](watering-system-iot/README.md#oled-status-display)
+for electrical details.
+
 ### Main-tank low-water protection
 
 Use D23 / GPIO 23 for the main-tank input. Pull the tank signal up to 3.3 V

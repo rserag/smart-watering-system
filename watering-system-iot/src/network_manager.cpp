@@ -9,7 +9,7 @@ namespace watering {
 
 namespace {
 
-constexpr char FIRMWARE_VERSION[] = "0.3.0";
+constexpr char FIRMWARE_VERSION[] = "0.4.0";
 
 bool hasZoneConfigFields(JsonObjectConst zone) {
   return zone["id"].is<uint8_t>() && zone["enabled"].is<bool>() &&
@@ -74,6 +74,14 @@ void NetworkManager::loop(uint32_t now) {
       (stateChanged || now - lastTelemetryAt_ >= config_.telemetryIntervalMs)) {
     sendTelemetry(now);
   }
+}
+
+bool NetworkManager::wifiConnected() const {
+  return WiFi.status() == WL_CONNECTED;
+}
+
+bool NetworkManager::backendConnected() const {
+  return webSocketConnected_;
 }
 
 void NetworkManager::startWifiAttempt(uint32_t now) {
