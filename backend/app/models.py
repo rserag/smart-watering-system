@@ -84,18 +84,29 @@ class MainTankState(Base):
     last_reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class MainTankAlert(Base):
-    __tablename__ = "main_tank_alerts"
-    __table_args__ = (Index("ix_main_tank_alert_pending", "device_id", "sent_at"),)
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    device_id: Mapped[str] = mapped_column(
-        ForeignKey("devices.id", ondelete="CASCADE"), nullable=False
+class TelegramDelivery(Base):
+    __tablename__ = "telegram_deliveries"
+    __table_args__ = (
+        Index("ix_telegram_delivery_device_updated", "device_id", "updated_at"),
+        Index("ix_telegram_delivery_request", "request_id"),
     )
-    is_low: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    event_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    request_id: Mapped[str | None] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(40))
+    status: Mapped[str] = mapped_column(String(40))
+    update_sequence: Mapped[int] = mapped_column(Integer)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    device_uptime_ms: Mapped[int] = mapped_column(BigInteger)
+    pending_count: Mapped[int] = mapped_column(Integer, default=0)
+    http_status: Mapped[int | None] = mapped_column(Integer)
+    error_stage: Mapped[str | None] = mapped_column(String(40))
+    telegram_error_code: Mapped[int | None] = mapped_column(Integer)
+    telegram_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    first_observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
 
 class Command(Base):

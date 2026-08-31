@@ -25,20 +25,23 @@ from app.models import (
     Base,
     Command,
     Device,
-    MainTankAlert,
     MainTankState,
     TelemetrySample,
+    TelegramDelivery,
     UserSession,
     WateringEvent,
     ZoneSample,
 )
-from app.notifications import send_main_tank_alert
-from app.protocol import CommandAck, CommandRequest, DeviceHello, TelemetryMessage
+from app.protocol import (
+    CommandAck,
+    CommandRequest,
+    DeviceHello,
+    TelegramDeliveryMessage,
+    TelemetryMessage,
+)
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-# HTTPX logs full request URLs at INFO; Telegram embeds the bot token in its URL.
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger("watering-server")
 settings = get_settings()
 
@@ -55,7 +58,7 @@ async def lifespan(_: FastAPI):
     await engine.dispose()
 
 
-app = FastAPI(title="Watering System Server", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Watering System Server", version="0.4.0", lifespan=lifespan)
 app.add_middleware(
     SessionMiddleware,
     secret_key=settings.session_secret,
@@ -81,7 +84,7 @@ async def health(session: AsyncSession = Depends(get_session)) -> dict[str, Any]
         "connectedDevices": await device_hub.connected_ids(),
         "authMode": settings.auth_mode,
         "serverConfigVersion": settings.server_config_version,
-        "telegramAlertsConfigured": settings.telegram_alerts_configured,
+        "telegramDelivery": "device-direct",
     }
 
 
@@ -95,8 +98,28 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
     latest = latest_result.scalar_one_or_none()
     zones: list[dict[str, Any]] = []
     wifi_rssi: int | None = None
+    telegram_status: dict[str, Any] = {
+        "directTelegram": False,
+        "telegramDebugEnabled": False,
+        "telegramConfigured": False,
+        "telegramPendingMessages": 0,
+        "telegramLastSendSucceeded": False,
+        "telegramWorkerRunning": False,
+        "telegramTimeReady": False,
+        "telegramLastFailureStage": None,
+    }
     if latest is not None:
         wifi_rssi = latest.wifi_rssi
+        telegram_status = {
+            "directTelegram": bool(latest.payload.get("directTelegram", False)),
+            "telegramDebugEnabled": bool(latest.payload.get("telegramDebugEnabled", False)),
+            "telegramConfigured": bool(latest.payload.get("telegramConfigured", False)),
+            "telegramPendingMessages": int(latest.payload.get("telegramPendingMessages", 0)),
+            "telegramLastSendSucceeded": bool(latest.payload.get("telegramLastSendSucceeded", False)),
+            "telegramWorkerRunning": bool(latest.payload.get("telegramWorkerRunning", False)),
+            "telegramTimeReady": bool(latest.payload.get("telegramTimeReady", False)),
+            "telegramLastFailureStage": latest.payload.get("telegramLastFailureStage"),
+        }
         zone_result = await session.execute(
             select(ZoneSample).where(ZoneSample.telemetry_id == latest.id).order_by(ZoneSample.zone_id)
         )
@@ -136,6 +159,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
         "wifiRssi": wifi_rssi,
         "mainTankLow": tank_state.is_low if tank_state is not None else None,
         "mainTankLastChangedAt": tank_state.last_changed_at.isoformat() if tank_state is not None else None,
+        **telegram_status,
         "zones": zones,
     }
 
@@ -163,6 +187,45 @@ async def get_latest(
     if device is None:
         raise HTTPException(status_code=404, detail="Unknown device")
     return await latest_snapshot(session, device)
+
+
+def telegram_delivery_dict(delivery: TelegramDelivery) -> dict[str, Any]:
+    return {
+        "eventId": delivery.event_id,
+        "deviceId": delivery.device_id,
+        "requestId": delivery.request_id,
+        "kind": delivery.kind,
+        "status": delivery.status,
+        "updateSequence": delivery.update_sequence,
+        "attempt": delivery.attempt,
+        "deviceUptimeMs": delivery.device_uptime_ms,
+        "pendingCount": delivery.pending_count,
+        "httpStatus": delivery.http_status,
+        "errorStage": delivery.error_stage,
+        "telegramErrorCode": delivery.telegram_error_code,
+        "telegramMessageId": delivery.telegram_message_id,
+        "firstObservedAt": delivery.first_observed_at.isoformat(),
+        "updatedAt": delivery.updated_at.isoformat(),
+        "sentAt": delivery.sent_at.isoformat() if delivery.sent_at else None,
+    }
+
+
+@app.get("/api/devices/{device_id}/telegram/deliveries")
+async def get_telegram_deliveries(
+    device_id: str,
+    _: Annotated[UserSession, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[dict[str, Any]]:
+    if await session.get(Device, device_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown device")
+    result = await session.execute(
+        select(TelegramDelivery)
+        .where(TelegramDelivery.device_id == device_id)
+        .order_by(TelegramDelivery.updated_at.desc())
+        .limit(limit)
+    )
+    return [telegram_delivery_dict(delivery) for delivery in result.scalars()]
 
 
 HISTORY_METRICS = {
@@ -300,7 +363,7 @@ def command_wire_message(command: Command) -> dict[str, Any]:
         "requestId": command.id,
         **command.parameters,
     }
-    if command.command == "zone.water" and "expiresAtEpoch" not in payload:
+    if command.command in {"zone.water", "telegram.debug.send"} and "expiresAtEpoch" not in payload:
         payload["expiresAtEpoch"] = int(utcnow().timestamp()) + 60
     return payload
 
@@ -321,6 +384,36 @@ async def create_command(
         command.status = "sent"
         command.sent_at = utcnow()
         await session.commit()
+    return {"commandId": command.id, "status": command.status}
+
+
+@app.post("/api/devices/{device_id}/telegram/debug", status_code=202)
+async def send_telegram_debug(
+    device_id: str,
+    _: Annotated[UserSession, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    if await session.get(Device, device_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown device")
+    if device_id not in await device_hub.connected_ids():
+        raise HTTPException(status_code=409, detail="Controller is offline")
+    command = Command(
+        id=str(uuid4()),
+        device_id=device_id,
+        command="telegram.debug.send",
+        parameters={"expiresAtEpoch": int(utcnow().timestamp()) + 60},
+        status="queued",
+    )
+    session.add(command)
+    await session.commit()
+    if not await device_hub.send(device_id, command_wire_message(command)):
+        command.status = "failed"
+        command.result = "Controller disconnected before command delivery"
+        await session.commit()
+        raise HTTPException(status_code=409, detail="Controller disconnected")
+    command.status = "sent"
+    command.sent_at = utcnow()
+    await session.commit()
     return {"commandId": command.id, "status": command.status}
 
 
@@ -402,23 +495,12 @@ async def update_main_tank_state(
                 last_reported_at=received_at,
             )
         )
-        if is_low:
-            session.add(
-                MainTankAlert(
-                    device_id=device_id, is_low=True, observed_at=received_at
-                )
-            )
         return
 
     state.last_reported_at = received_at
     if state.is_low != is_low:
         state.is_low = is_low
         state.last_changed_at = received_at
-        session.add(
-            MainTankAlert(
-                device_id=device_id, is_low=is_low, observed_at=received_at
-            )
-        )
 
 
 async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
@@ -472,55 +554,6 @@ async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
         return await latest_snapshot(session, device)
 
 
-async def deliver_pending_main_tank_alert(device_id: str) -> None:
-    if not settings.telegram_alerts_configured:
-        return
-
-    async with SessionLocal() as session:
-        result = await session.execute(
-            select(MainTankAlert)
-            .where(
-                MainTankAlert.device_id == device_id,
-                MainTankAlert.sent_at.is_(None),
-            )
-            .order_by(MainTankAlert.observed_at, MainTankAlert.id)
-            .limit(1)
-        )
-        alert = result.scalar_one_or_none()
-        if alert is None:
-            return
-        alert_id = alert.id
-        is_low = alert.is_low
-
-    try:
-        await send_main_tank_alert(
-            bot_token=settings.telegram_bot_token,
-            chat_id=settings.telegram_chat_id,
-            device_id=device_id,
-            is_low=is_low,
-        )
-    except Exception as exc:
-        # Do not include the request URL in logs because it contains the bot token.
-        logger.error(
-            "failed to send main-tank Telegram alert device_id=%s error_type=%s",
-            device_id,
-            type(exc).__name__,
-        )
-        async with SessionLocal() as session:
-            alert = await session.get(MainTankAlert, alert_id)
-            if alert is not None and alert.sent_at is None:
-                alert.attempts += 1
-                await session.commit()
-        return
-
-    async with SessionLocal() as session:
-        alert = await session.get(MainTankAlert, alert_id)
-        if alert is not None and alert.sent_at is None:
-            alert.sent_at = utcnow()
-            alert.attempts += 1
-            await session.commit()
-
-
 async def record_command_ack(device_id: str, message: CommandAck) -> None:
     async with SessionLocal() as session:
         command = await session.get(Command, message.request_id)
@@ -530,6 +563,60 @@ async def record_command_ack(device_id: str, message: CommandAck) -> None:
         command.result = message.message
         command.acknowledged_at = utcnow()
         await session.commit()
+
+
+async def record_telegram_delivery(
+    device_id: str, message: TelegramDeliveryMessage
+) -> dict[str, Any] | None:
+    observed_at = utcnow()
+    async with SessionLocal() as session:
+        if await session.get(Device, device_id) is None:
+            return None
+        delivery = await session.get(TelegramDelivery, message.event_id)
+        applied = False
+        if delivery is None:
+            delivery = TelegramDelivery(
+                event_id=message.event_id,
+                device_id=device_id,
+                request_id=message.request_id,
+                kind=message.kind,
+                status=message.status,
+                update_sequence=message.update_sequence,
+                attempt=message.attempt,
+                device_uptime_ms=message.uptime_ms,
+                pending_count=message.pending_count,
+                http_status=message.http_status,
+                error_stage=message.error_stage,
+                telegram_error_code=message.telegram_error_code,
+                telegram_message_id=message.telegram_message_id,
+                first_observed_at=observed_at,
+                updated_at=observed_at,
+                sent_at=observed_at if message.status == "sent" else None,
+            )
+            session.add(delivery)
+            applied = True
+        elif message.update_sequence >= delivery.update_sequence:
+            delivery.request_id = message.request_id or delivery.request_id
+            delivery.kind = message.kind
+            delivery.status = message.status
+            delivery.update_sequence = message.update_sequence
+            delivery.attempt = message.attempt
+            delivery.device_uptime_ms = message.uptime_ms
+            delivery.pending_count = message.pending_count
+            delivery.http_status = message.http_status
+            delivery.error_stage = message.error_stage
+            delivery.telegram_error_code = message.telegram_error_code
+            delivery.telegram_message_id = message.telegram_message_id
+            delivery.updated_at = observed_at
+            if message.status == "sent":
+                delivery.sent_at = observed_at
+            applied = True
+        if applied and message.request_id:
+            command = await session.get(Command, message.request_id)
+            if command is not None and command.device_id == device_id:
+                command.result = f"Telegram delivery {message.status}"
+        await session.commit()
+        return telegram_delivery_dict(delivery)
 
 
 def valid_device_authorization(websocket: WebSocket) -> bool:
@@ -583,11 +670,29 @@ async def device_websocket(websocket: WebSocket) -> None:
                     snapshot = await record_telemetry(telemetry)
                     if snapshot is not None:
                         await dashboard_hub.broadcast({"type": "telemetry", "device": snapshot})
-                        await deliver_pending_main_tank_alert(device_id)
                 elif message_type == "command.ack":
                     ack = CommandAck.model_validate(raw)
                     if ack.device_id == device_id:
                         await record_command_ack(device_id, ack)
+                elif message_type == "telegram.delivery":
+                    delivery_message = TelegramDeliveryMessage.model_validate(raw)
+                    if delivery_message.device_id != device_id:
+                        await websocket.close(code=4003, reason="Device ID changed")
+                        return
+                    delivery = await record_telegram_delivery(device_id, delivery_message)
+                    await websocket.send_json(
+                        {
+                            "type": "telegram.delivery.ack",
+                            "schemaVersion": delivery_message.schema_version,
+                            "deviceId": device_id,
+                            "eventId": delivery_message.event_id,
+                            "updateSequence": delivery_message.update_sequence,
+                        }
+                    )
+                    if delivery is not None:
+                        await dashboard_hub.broadcast(
+                            {"type": "telegram.delivery", "delivery": delivery}
+                        )
                 elif message_type in {"config.ack", "config.snapshot"}:
                     logger.info("device configuration message device_id=%s type=%s", device_id, message_type)
                 else:

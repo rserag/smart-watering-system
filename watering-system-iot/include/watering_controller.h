@@ -7,6 +7,13 @@
 
 namespace watering {
 
+struct PumpStartEvent {
+  uint8_t zoneId;
+  bool manual;
+  uint32_t durationMs;
+  uint8_t moisturePercent;
+};
+
 class WateringController {
  public:
   WateringController(const uint8_t (&relayPins)[ZONE_COUNT],
@@ -28,6 +35,8 @@ class WateringController {
   const ZoneState &zoneState(size_t zone) const;
   const SystemConfig &config() const;
   bool consumeStateChanged();
+  bool consumeTankStateChanged(bool &isLow);
+  bool consumePumpStarted(PumpStartEvent &event);
   int8_t activeZone() const;
   bool mainTankLow() const;
 
@@ -48,6 +57,9 @@ class WateringController {
   uint32_t lastSampleAt_ = 0;
   bool hasSampled_ = false;
   bool stateChanged_ = false;
+  bool tankStateChanged_ = false;
+  bool pumpStarted_ = false;
+  PumpStartEvent pumpStartEvent_{};
   int8_t activeZone_ = -1;
   bool mainTankLow_ = true;
   bool pendingMainTankLow_ = true;

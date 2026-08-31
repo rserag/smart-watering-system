@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from app.main import update_main_tank_state
-from app.models import MainTankAlert, MainTankState
+from app.models import MainTankState
 
 
 class FakeSession:
@@ -18,16 +18,13 @@ class FakeSession:
         self.added.append(value)
 
 
-def test_low_tank_transition_is_queued_once_until_state_changes() -> None:
+def test_low_tank_state_is_tracked_without_backend_delivery() -> None:
     first_seen = datetime.now(timezone.utc)
     session = FakeSession()
     asyncio.run(update_main_tank_state(session, "controller-1", True, first_seen))
 
     state = next(item for item in session.added if isinstance(item, MainTankState))
-    alerts = [item for item in session.added if isinstance(item, MainTankAlert)]
     assert state.is_low is True
-    assert len(alerts) == 1
-    assert alerts[0].is_low is True
 
     repeated = FakeSession(state)
     asyncio.run(
@@ -43,8 +40,6 @@ def test_low_tank_transition_is_queued_once_until_state_changes() -> None:
             restored, "controller-1", False, first_seen + timedelta(minutes=1)
         )
     )
-    recovery_alerts = [
-        item for item in restored.added if isinstance(item, MainTankAlert)
-    ]
-    assert len(recovery_alerts) == 1
-    assert recovery_alerts[0].is_low is False
+    assert not restored.added
+    assert state.is_low is False
+    assert state.last_changed_at == first_seen + timedelta(minutes=1)

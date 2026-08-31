@@ -89,11 +89,17 @@ An invalid or older snapshot leaves the current configuration in place.
 
 GPIO assignments and absolute safety limits cannot be changed remotely.
 
+The Telegram debug preference is stored under a separate NVS key, so changing
+it does not replace the watering configuration or reset calibration. Its safe
+default is disabled.
+
 ## WebSocket setup
 
 Copy `include/secrets.h.example` to `include/secrets.h` and configure:
 
 - Wi-Fi SSID and password.
+- `TELEGRAM_ENABLED`, the Telegram bot token, and destination chat ID for
+  backend-independent notifications.
 - A unique device ID and token.
 - WebSocket host, port, and path.
 - `WEBSOCKET_ENABLED = true` after those values are present.
@@ -104,6 +110,32 @@ so a self-signed or otherwise untrusted server certificate is accepted. WSS
 still encrypts traffic, but it does not authenticate the server and is therefore
 vulnerable to a machine-in-the-middle impersonating the backend. This mode is
 intended only for the current trusted local-network setup.
+
+## Direct Telegram notifications
+
+The ESP32 contacts `api.telegram.org` directly over certificate-validated
+HTTPS. Network work runs in a dedicated low-priority task, so DNS, TLS, and
+Telegram response delays cannot block sensor sampling, tank detection, or relay
+timing. Multiple NTP servers provide the valid clock required for TLS.
+
+Low-tank and tank-restored messages are always enabled when Telegram credentials
+are configured. The persisted Telegram debug toggle additionally sends every
+pump start and one controller report per hour. Enabling debug sends the first
+report immediately. A one-shot debug report can also be requested from the
+website without changing that toggle. Failed messages remain in bounded
+in-memory retry queues; critical tank messages use a separate queue from debug
+traffic.
+
+Every notification has a non-secret delivery record containing its kind,
+attempt, HTTP/API result, and Telegram message ID. The latest 16 records are
+persisted in NVS until the backend acknowledges them, so results produced while
+the backend is unavailable are replayed after reconnection. Message text,
+bot token, and chat ID are never included in this reporting channel.
+
+The bot token is a device credential. Keep `include/secrets.h` out of source
+control, use a dedicated watering bot, and rotate the token if a programmed
+device is lost. Production deployments should also consider ESP32 flash
+encryption and secure boot.
 
 ## Message requirements
 
@@ -214,6 +246,35 @@ Send `config.get` to receive the active `config.snapshot`:
 }
 ```
 
+### Telegram debug setting
+
+The website uses a focused command rather than replacing the watering
+configuration. The ESP32 acknowledges it only after saving the setting to NVS:
+
+```json
+{
+  "type": "telegram.debug.set",
+  "schemaVersion": 1,
+  "deviceId": "watering-system-01",
+  "requestId": "telegram-debug-1",
+  "enabled": true
+}
+```
+
+The one-shot website test uses an expiring `telegram.debug.send` command. It is
+accepted only while Telegram is configured and the ESP32 clock is synchronized,
+and it sends regardless of the recurring debug toggle:
+
+```json
+{
+  "type": "telegram.debug.send",
+  "schemaVersion": 1,
+  "deviceId": "watering-system-01",
+  "requestId": "telegram-debug-now-1",
+  "expiresAtEpoch": 1787402700
+}
+```
+
 ### Manual watering
 
 Manual watering bypasses the moisture threshold but still requires a valid
@@ -239,6 +300,8 @@ Other supported commands are:
 - `fault.clear` with `zoneId`.
 - `telemetry.request`.
 - `config.get`.
+- `telegram.debug.set` with boolean `enabled`.
+- `telegram.debug.send` with a valid `expiresAtEpoch`.
 
 The device remembers a bounded set of recent request IDs to avoid executing an
 immediate duplicate command. Expiration prevents an old watering command from
@@ -249,6 +312,8 @@ being replayed after a reboot.
 The device sends a `device.hello` after connecting, then telemetry on the
 configured interval and immediately after sensor or controller state changes.
 The top-level `mainTankLow` field reports the debounced float-switch state.
+It also reports the persisted Telegram debug value, whether direct Telegram is
+configured, the pending message count, and the result of the latest delivery.
 Each zone reports:
 
 - Latest and filtered raw ADC values.
@@ -260,6 +325,11 @@ Each zone reports:
 
 Relative moisture percentage is a device calibration scale and is not a
 laboratory volumetric-water-content measurement.
+
+Delivery lifecycle updates use `telegram.delivery`. The backend replies with
+`telegram.delivery.ack`; only then may the ESP32 remove that persisted audit
+record. This acknowledgement affects observability only and never participates
+in Telegram delivery or watering control.
 
 ## Build
 

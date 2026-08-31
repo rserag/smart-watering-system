@@ -9,6 +9,7 @@ namespace {
 constexpr uint32_t STORAGE_MAGIC = 0x57415452;  // "WATR"
 constexpr char STORAGE_NAMESPACE[] = "watering";
 constexpr char STORAGE_KEY[] = "config";
+constexpr char TELEGRAM_DEBUG_KEY[] = "tg_debug";
 
 struct StoredConfig {
   uint32_t magic;
@@ -73,6 +74,30 @@ bool ConfigStore::save(const SystemConfig &config) {
       preferences.putBytes(STORAGE_KEY, &stored, sizeof(stored));
   preferences.end();
   return bytesWritten == sizeof(stored);
+}
+
+bool ConfigStore::loadTelegramDebugEnabled(bool &enabled) {
+  Preferences preferences;
+  if (!preferences.begin(STORAGE_NAMESPACE, true)) {
+    return false;
+  }
+  const bool present = preferences.isKey(TELEGRAM_DEBUG_KEY);
+  if (present) {
+    enabled = preferences.getBool(TELEGRAM_DEBUG_KEY, false);
+  }
+  preferences.end();
+  return present;
+}
+
+bool ConfigStore::saveTelegramDebugEnabled(bool enabled) {
+  Preferences preferences;
+  if (!preferences.begin(STORAGE_NAMESPACE, false)) {
+    return false;
+  }
+  const size_t bytesWritten =
+      preferences.putBool(TELEGRAM_DEBUG_KEY, enabled);
+  preferences.end();
+  return bytesWritten == sizeof(uint8_t);
 }
 
 uint32_t ConfigStore::checksum(const uint8_t *data, size_t length) {

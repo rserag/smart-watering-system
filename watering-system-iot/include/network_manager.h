@@ -4,6 +4,7 @@
 #include <WebSocketsClient.h>
 
 #include "config_store.h"
+#include "telegram_notifier.h"
 #include "watering_controller.h"
 
 namespace watering {
@@ -11,7 +12,7 @@ namespace watering {
 class NetworkManager {
  public:
   NetworkManager(WateringController &controller, ConfigStore &configStore,
-                 SystemConfig &config);
+                 SystemConfig &config, TelegramNotifier &telegram);
 
   void begin();
   void loop(uint32_t now);
@@ -29,6 +30,7 @@ class NetworkManager {
   WateringController &controller_;
   ConfigStore &configStore_;
   SystemConfig &config_;
+  TelegramNotifier &telegram_;
   WebSocketsClient webSocket_;
 
   bool wifiWasConnected_ = false;
@@ -61,6 +63,7 @@ class NetworkManager {
   void rememberRequest(const String &requestId);
   void sendHello();
   void sendTelemetry(uint32_t now);
+  void sendTelegramDeliveryReport();
   void sendConfigSnapshot(const String &requestId);
   void sendConfigAck(const String &requestId, uint32_t revision,
                      const char *status, const char *error = nullptr);

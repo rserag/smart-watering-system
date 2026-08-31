@@ -3,6 +3,7 @@
 #include "config_store.h"
 #include "display_manager.h"
 #include "network_manager.h"
+#include "telegram_notifier.h"
 #include "watering_controller.h"
 #include "watering_types.h"
 
@@ -19,7 +20,9 @@ watering::SystemConfig systemConfig;
 watering::ConfigStore configStore;
 watering::WateringController controller(RELAY_PINS, SENSOR_PINS,
                                         MAIN_TANK_LEVEL_PIN);
-watering::NetworkManager network(controller, configStore, systemConfig);
+watering::TelegramNotifier telegram(controller);
+watering::NetworkManager network(controller, configStore, systemConfig,
+                                 telegram);
 watering::DisplayManager display(OLED_SDA_PIN, OLED_SCL_PIN,
                                  OLED_I2C_ADDRESS);
 
@@ -48,6 +51,10 @@ void setup() {
                   systemConfig.zones[zone].enabled ? "enabled" : "disabled");
   }
 
+  bool telegramDebugEnabled = false;
+  configStore.loadTelegramDebugEnabled(telegramDebugEnabled);
+  telegram.begin(telegramDebugEnabled);
+
   display.begin();
   display.update(controller, false, false, millis(), true);
   network.begin();
@@ -57,6 +64,7 @@ void loop() {
   const uint32_t now = millis();
   controller.loop(now);
   network.loop(now);
+  telegram.loop(now, network.wifiConnected());
   display.update(controller, network.wifiConnected(),
                  network.backendConnected(), now);
   delay(5);  // Yield to the Wi-Fi stack without blocking control timing.
