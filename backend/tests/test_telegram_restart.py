@@ -4,8 +4,17 @@ from datetime import datetime, timezone
 from app.main import (
     close_interrupted_telegram_deliveries,
     interrupted_telegram_deliveries_query,
+    supports_manual_telegram_debug,
 )
 from app.models import Command, TelegramDelivery
+
+
+def test_manual_telegram_debug_requires_fixed_firmware() -> None:
+    assert supports_manual_telegram_debug("0.5.0") is False
+    assert supports_manual_telegram_debug("0.5.1") is True
+    assert supports_manual_telegram_debug("0.6.0") is True
+    assert supports_manual_telegram_debug(None) is False
+    assert supports_manual_telegram_debug("development") is False
 
 
 class FakeScalarResult:
