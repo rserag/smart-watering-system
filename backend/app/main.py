@@ -88,13 +88,19 @@ async def health(session: AsyncSession = Depends(get_session)) -> dict[str, Any]
     }
 
 
-async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, Any]:
-    latest_result = await session.execute(
+def latest_telemetry_query(device_id: str):
+    return (
         select(TelemetrySample)
-        .where(TelemetrySample.device_id == device.id)
-        .order_by(TelemetrySample.received_at.desc())
+        .where(TelemetrySample.device_id == device_id)
+        # The database clock can jump; the generated ID remains the authoritative
+        # insertion order for deciding which controller state is current.
+        .order_by(TelemetrySample.id.desc())
         .limit(1)
     )
+
+
+async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, Any]:
+    latest_result = await session.execute(latest_telemetry_query(device.id))
     latest = latest_result.scalar_one_or_none()
     zones: list[dict[str, Any]] = []
     wifi_rssi: int | None = None
@@ -127,7 +133,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
             event_result = await session.execute(
                 select(WateringEvent)
                 .where(WateringEvent.device_id == device.id, WateringEvent.zone_id == zone.zone_id)
-                .order_by(WateringEvent.started_at.desc())
+                .order_by(WateringEvent.id.desc())
                 .limit(1)
             )
             event = event_result.scalar_one_or_none()
@@ -455,7 +461,7 @@ async def update_watering_event(
     previous_result = await session.execute(
         select(ZoneSample)
         .where(ZoneSample.device_id == device_id, ZoneSample.zone_id == zone_id)
-        .order_by(ZoneSample.received_at.desc())
+        .order_by(ZoneSample.id.desc())
         .limit(1)
     )
     previous = previous_result.scalar_one_or_none()
@@ -466,7 +472,7 @@ async def update_watering_event(
         event_result = await session.execute(
             select(WateringEvent)
             .where(WateringEvent.device_id == device_id, WateringEvent.zone_id == zone_id, WateringEvent.status == "running")
-            .order_by(WateringEvent.started_at.desc())
+            .order_by(WateringEvent.id.desc())
             .limit(1)
         )
         event = event_result.scalar_one_or_none()
