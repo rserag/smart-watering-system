@@ -437,6 +437,7 @@ async def deliver_queued_commands(device_id: str) -> None:
 
 
 async def record_hello(hello: DeviceHello) -> None:
+    observed_at = utcnow()
     async with SessionLocal() as session:
         device = await session.get(Device, hello.device_id)
         if device is None:
@@ -447,8 +448,37 @@ async def record_hello(hello: DeviceHello) -> None:
         device.schema_version = hello.schema_version
         device.config_revision = hello.config_revision
         device.automatic_watering_enabled = hello.automatic_watering_enabled
-        device.last_seen_at = utcnow()
+        device.last_seen_at = observed_at
+        await close_interrupted_telegram_deliveries(
+            session, hello.device_id, hello.boot_id, observed_at
+        )
         await session.commit()
+
+
+def interrupted_telegram_deliveries_query(device_id: str, boot_id: str):
+    return select(TelegramDelivery).where(
+        TelegramDelivery.device_id == device_id,
+        TelegramDelivery.status.in_(("queued", "sending", "retry_scheduled")),
+        ~TelegramDelivery.event_id.startswith(f"{boot_id}:"),
+    )
+
+
+async def close_interrupted_telegram_deliveries(
+    session: AsyncSession, device_id: str, boot_id: str, observed_at: datetime
+) -> None:
+    result = await session.execute(
+        interrupted_telegram_deliveries_query(device_id, boot_id)
+    )
+    for delivery in result.scalars():
+        delivery.status = "dropped"
+        delivery.update_sequence += 1
+        delivery.error_stage = "controller_restart"
+        delivery.updated_at = observed_at
+        if delivery.request_id:
+            command = await session.get(Command, delivery.request_id)
+            if command is not None and command.device_id == device_id:
+                command.status = "failed"
+                command.result = "Controller restarted during Telegram delivery"
 
 
 async def update_watering_event(

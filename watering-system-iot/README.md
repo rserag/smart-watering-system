@@ -263,7 +263,9 @@ configuration. The ESP32 acknowledges it only after saving the setting to NVS:
 
 The one-shot website test uses an expiring `telegram.debug.send` command. It is
 accepted only while Telegram is configured and the ESP32 clock is synchronized,
-and it sends regardless of the recurring debug toggle:
+and it sends regardless of the recurring debug toggle. The job is deferred
+until the inbound WebSocket callback has released its TLS/JSON working memory,
+so opening Telegram's second TLS connection cannot collide with command parsing:
 
 ```json
 {

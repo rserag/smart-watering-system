@@ -67,6 +67,7 @@ void NetworkManager::begin() {
 void NetworkManager::loop(uint32_t now) {
   handleWifi(now);
   handleWebSocketStartup();
+  processPendingTelegramDebug();
 
   if (webSocketStarted_ && WiFi.status() == WL_CONNECTED &&
       (webSocketConnected_ || controller_.activeZone() < 0)) {
@@ -246,6 +247,25 @@ void NetworkManager::handleIncomingText(const uint8_t *payload, size_t length) {
   }
 }
 
+void NetworkManager::processPendingTelegramDebug() {
+  if (pendingTelegramDebugRequestId_.isEmpty()) {
+    return;
+  }
+
+  const String requestId = pendingTelegramDebugRequestId_;
+  pendingTelegramDebugRequestId_ = "";
+
+  // A manual request arrives inside the secure WebSocket callback. Let that
+  // callback and its JSON document unwind before the Telegram worker allocates
+  // a second TLS connection. Starting both paths together can exhaust the
+  // ESP32's transient memory and restart the controller.
+  sendCommandAck(requestId, "telegram.debug.send", "accepted");
+  if (!telegram_.requestDebugReport(requestId, millis())) {
+    sendCommandAck(requestId, "telegram.debug.send", "rejected",
+                   "failed to queue Telegram debug report");
+  }
+}
+
 bool NetworkManager::decodeConfigSnapshot(JsonObjectConst root,
                                           SystemConfig &candidate,
                                           String &error) const {
@@ -396,6 +416,8 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
     const uint32_t expiresAt = root["expiresAtEpoch"] | 0;
     if (!telegram_.configured()) {
       error = "Telegram is not configured";
+    } else if (!telegram_.workerRunning()) {
+      error = "Telegram sender is not running";
     } else if (currentTime < 1700000000) {
       error = "device time is not synchronized";
     } else if (!root["expiresAtEpoch"].is<uint32_t>() ||
@@ -403,11 +425,11 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
                expiresAt - static_cast<uint32_t>(currentTime) >
                    COMMAND_MAX_FUTURE_SECONDS) {
       error = "expiresAtEpoch must be within the next five minutes";
+    } else if (!pendingTelegramDebugRequestId_.isEmpty()) {
+      error = "another Telegram debug report is being queued";
     } else {
-      success = telegram_.requestDebugReport(requestId, millis());
-      if (!success) {
-        error = "failed to queue Telegram debug report";
-      }
+      pendingTelegramDebugRequestId_ = requestId;
+      success = true;
     }
   } else {
     const uint8_t zoneId = root["zoneId"] | 0;
@@ -434,6 +456,9 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
   }
 
   rememberRequest(requestId);
+  if (success && strcmp(type, "telegram.debug.send") == 0) {
+    return;
+  }
   sendCommandAck(requestId, type, success ? "accepted" : "rejected", error);
   if (success && strcmp(type, "telegram.debug.set") == 0) {
     sendTelemetry(millis());

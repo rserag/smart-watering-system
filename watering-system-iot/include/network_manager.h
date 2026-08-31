@@ -43,6 +43,7 @@ class NetworkManager {
   uint32_t sequence_ = 0;
   String bootId_;
   String authorizationHeader_;
+  String pendingTelegramDebugRequestId_;
   String recentRequestIds_[RECENT_REQUEST_COUNT];
   size_t nextRequestSlot_ = 0;
 
@@ -53,6 +54,7 @@ class NetworkManager {
   void startWebSocket();
   void handleWebSocketEvent(WStype_t type, uint8_t *payload, size_t length);
   void handleIncomingText(const uint8_t *payload, size_t length);
+  void processPendingTelegramDebug();
 
   bool decodeConfigSnapshot(JsonObjectConst root, SystemConfig &candidate,
                             String &error) const;
