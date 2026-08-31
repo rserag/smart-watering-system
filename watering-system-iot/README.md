@@ -13,10 +13,25 @@ is unavailable.
 | 3 | 25 | 36 / VP |
 | 4 | 33 | 39 / VN |
 
-The main-tank float switch uses GPIO 32 and GND. Mount and orient a normally
-closed float switch so it connects GPIO 32 to GND while the water level is
-safe. The ESP32 uses its internal pull-up: a low pin means water is available;
-an open switch, low water, or a disconnected wire means the tank is low.
+The main-tank float switch uses D23 / GPIO 23 with an external 3.3 V pull-up:
+
+```text
+3.3 V -- 5 kOhm --+-- tank signal -- switch -- GND
+                  |
+                  +-- 1 kOhm --+-- D23 / GPIO 23
+                               |
+                             100 nF (104)
+                               |
+                              GND
+```
+
+Mount and orient the switch so it is open while the water level is safe and
+connects the tank signal to GND when the water level is low. GPIO 23 is
+configured as a normal `INPUT`; the external resistor, not the ESP32's internal
+pull-up, defines the open state. A high input means water is available, while a
+low input engages the watering interlock. With this polarity, a disconnected
+tank cable reads as ready rather than low water. Use 3.3 V, not 5 V, and
+preferably use a twisted signal/GND pair for the tank cable.
 
 The transistor relay drivers are active when the ESP32 output is `HIGH`. All
 relays are driven `LOW` before the controller loads saved configuration.

@@ -71,12 +71,17 @@ The firmware has not been flashed automatically because uploading can affect con
 
 ### Main-tank low-water protection
 
-Connect a normally closed float switch between ESP32 GPIO 32 and GND, oriented
-so it is closed while the tank has enough water. An open switch is treated as
-low water, which also makes a broken or disconnected wire fail safe. After a
-250-millisecond low-level confirmation, the ESP32 stops every relay locally and
-blocks automatic and manual watering. A safe level must remain stable for two
-seconds before watering can resume.
+Use D23 / GPIO 23 for the main-tank input. Pull the tank signal up to 3.3 V
+through 5 kOhm, connect that signal to GPIO 23 through 1 kOhm, and connect a
+100 nF ceramic capacitor (`104`) from the GPIO 23 side of the series resistor
+to GND.
+Run the tank signal and GND to the float switch, oriented so it is open while
+the tank has enough water and closes to GND when the water level is low. GPIO 23
+is configured as a normal `INPUT`: HIGH/open means safe, while LOW/closed means
+low water. With this polarity, a disconnected tank wire reads as safe. After a
+250-millisecond confirmation, the ESP32 stops every relay locally and blocks
+automatic and manual watering. A safe level must remain stable for two seconds
+before watering can resume.
 
 Telegram alerts are sent by the backend on the low-water and restored
 transitions. Create a bot with Telegram's `@BotFather`, send the bot one message,

@@ -24,12 +24,15 @@ void WateringController::begin(const SystemConfig &config) {
     analogSetPinAttenuation(sensorPins_[zone], ADC_11db);
   }
 
-  // The float switch connects this pin to GND while the tank has water.
-  // An open circuit, including a broken wire, therefore engages the interlock.
-  pinMode(mainTankLevelPin_, INPUT_PULLUP);
-  mainTankLow_ = digitalRead(mainTankLevelPin_) == HIGH;
+  // An external 5 kOhm pull-up holds the input HIGH while the float switch is
+  // open. Do not enable the ESP32's internal pull-up here.
+  pinMode(mainTankLevelPin_, INPUT);
+  mainTankLow_ = digitalRead(mainTankLevelPin_) == LOW;
   pendingMainTankLow_ = mainTankLow_;
   tankLevelTransitionStartedAt_ = millis();
+  Serial.printf("Main tank GPIO %u: %s\n", mainTankLevelPin_,
+                mainTankLow_ ? "LOW WATER (LOW/closed)"
+                             : "ready (HIGH/open)");
 
   initializeRelaySafetyTimer();
   resetRuntimeState(millis());
@@ -196,7 +199,7 @@ uint16_t WateringController::readAveragedRaw(uint8_t pin) {
 }
 
 void WateringController::updateMainTankLevel(uint32_t now) {
-  const bool observedLow = digitalRead(mainTankLevelPin_) == HIGH;
+  const bool observedLow = digitalRead(mainTankLevelPin_) == LOW;
   if (observedLow != pendingMainTankLow_) {
     pendingMainTankLow_ = observedLow;
     tankLevelTransitionStartedAt_ = now;
@@ -240,6 +243,10 @@ void WateringController::sampleAllSensors(uint32_t now) {
   lastSampleAt_ = now;
   hasSampled_ = true;
 
+  const bool tankPinHigh = digitalRead(mainTankLevelPin_) == HIGH;
+  Serial.printf("Main tank GPIO %u: pin=%s, state=%s\n", mainTankLevelPin_,
+                tankPinHigh ? "HIGH/open" : "LOW/closed",
+                mainTankLow_ ? "LOW WATER (watering blocked)" : "ready");
   Serial.println("Moisture sensor readings:");
   for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
     SensorState &sensor = sensors_[zone];

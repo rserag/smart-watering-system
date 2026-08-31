@@ -9,7 +9,7 @@ namespace {
 
 constexpr uint8_t RELAY_PINS[watering::ZONE_COUNT] = {27, 26, 25, 33};
 constexpr uint8_t SENSOR_PINS[watering::ZONE_COUNT] = {34, 35, 36, 39};
-constexpr uint8_t MAIN_TANK_LEVEL_PIN = 32;
+constexpr uint8_t MAIN_TANK_LEVEL_PIN = 23;
 
 watering::SystemConfig systemConfig;
 watering::ConfigStore configStore;
