@@ -374,6 +374,16 @@ def command_wire_message(command: Command) -> dict[str, Any]:
     return payload
 
 
+def supports_manual_telegram_debug(firmware_version: str | None) -> bool:
+    if firmware_version is None:
+        return False
+    try:
+        parts = tuple(int(part) for part in firmware_version.split("."))
+    except ValueError:
+        return False
+    return (parts + (0, 0, 0))[:3] >= (0, 5, 1)
+
+
 @app.post("/api/devices/{device_id}/commands", status_code=202)
 async def create_command(
     device_id: str,
@@ -399,8 +409,14 @@ async def send_telegram_debug(
     _: Annotated[UserSession, Depends(require_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    if await session.get(Device, device_id) is None:
+    device = await session.get(Device, device_id)
+    if device is None:
         raise HTTPException(status_code=404, detail="Unknown device")
+    if not supports_manual_telegram_debug(device.firmware_version):
+        raise HTTPException(
+            status_code=409,
+            detail="Firmware 0.5.1 or newer is required for manual Telegram debug",
+        )
     if device_id not in await device_hub.connected_ids():
         raise HTTPException(status_code=409, detail="Controller is offline")
     command = Command(
