@@ -21,7 +21,7 @@ export default function ZoneDetails({ deviceId, zone, onSaved, onHistory }: {
     event.preventDefault();
     setSaving(true); setError('');
     try {
-      const result = await fetchJson<{ id: number; name: string | null }>(`/api/devices/${encodeURIComponent(deviceId)}/zones/${zone.id}`, {
+      const result = await fetchJson<{ id: number; name: string | null }>(`devices/${encodeURIComponent(deviceId)}/zones/${zone.id}`, {
         method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: draft.trim() }),
       });
       onSaved(deviceId, result.id, result.name);

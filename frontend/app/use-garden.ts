@@ -12,9 +12,9 @@ export function useGarden() {
   const [connection, setConnection] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
   const [now, setNow] = useState(0);
 
-  const load = useCallback(() => fetchJson<Me>('/api/me').then(async identity => {
+  const load = useCallback(() => fetchJson<Me>('me').then(async identity => {
       setMe(identity);
-      if (identity.authenticated) setDevices(await fetchJson<Device[]>('/api/devices'));
+      if (identity.authenticated) setDevices(await fetchJson<Device[]>('devices'));
       setError('');
     }).catch(reason => {
       setError(reason instanceof Error ? reason.message : 'The garden is temporarily unavailable.');
@@ -81,7 +81,7 @@ export function useGarden() {
         setConnection('reconnecting');
         retry = setTimeout(async () => {
           try {
-            const identity = await fetchJson<Me>('/api/me');
+            const identity = await fetchJson<Me>('me');
             if (disposed) return;
             if (!identity.authenticated) { setMe(identity); return; }
           } catch { /* Retry the live connection after a temporary network failure. */ }

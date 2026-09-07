@@ -11,7 +11,7 @@ export default function SystemView({ selected, deliveries }: { selected: Device;
   const [initialDeliveries, setInitialDeliveries] = useState<TelegramDelivery[]>([]);
   useEffect(() => {
     let active = true;
-    fetchJson<TelegramDelivery[]>(`/api/devices/${encodeURIComponent(selected.id)}/telegram/deliveries?limit=50`).then(data => { if (active) setInitialDeliveries(data); }).catch(reason => { if (active) setError(reason.message); });
+    fetchJson<TelegramDelivery[]>(`devices/${encodeURIComponent(selected.id)}/telegram/deliveries?limit=50`).then(data => { if (active) setInitialDeliveries(data); }).catch(reason => { if (active) setError(reason.message); });
     return () => { active = false; };
   }, [selected.id]);
   const combined = new Map(initialDeliveries.map(delivery => [delivery.eventId, delivery]));
@@ -23,14 +23,14 @@ export default function SystemView({ selected, deliveries }: { selected: Device;
   const setTelegramDebug = useCallback(async (enabled: boolean) => {
     setSavingTelegram(true); setError(''); setNotice('');
     try {
-      await fetchJson(`/api/devices/${encodeURIComponent(selected.id)}/commands`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:'telegram.debug.set', parameters:{enabled}})});
+      await fetchJson(`devices/${encodeURIComponent(selected.id)}/commands`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({command:'telegram.debug.set', parameters:{enabled}})});
       setNotice('Change sent. Waiting for the controller to report its setting.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to update Telegram debug.'); } finally { setSavingTelegram(false); }
   }, [selected.id]);
   const sendTelegramDebug = useCallback(async () => {
     setSendingTelegramDebug(true); setError(''); setNotice('');
     try {
-      await fetchJson(`/api/devices/${encodeURIComponent(selected.id)}/telegram/debug`, {method:'POST'});
+      await fetchJson(`devices/${encodeURIComponent(selected.id)}/telegram/debug`, {method:'POST'});
       setNotice('Report requested. Delivery progress appears below.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Unable to request the report.'); } finally { setSendingTelegramDebug(false); }
   }, [selected.id]);

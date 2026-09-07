@@ -59,7 +59,7 @@ export function zoneName(zone: Pick<Zone, 'id' | 'name'>) {
 }
 
 export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, { ...init, credentials: 'include' });
+  const response = await fetch(`/api/${path}`, { ...init, credentials: 'include' });
   if (!response.ok) {
     let detail: unknown;
     try { detail = ((await response.json()) as { detail?: unknown }).detail; } catch { /* Use the status below. */ }

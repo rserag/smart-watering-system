@@ -81,8 +81,8 @@ export default function HistoryView({device, zoneId, onZoneChange}: {device:Devi
     const query = new URLSearchParams({from:range.from.toISOString(), to:range.to.toISOString(), zone_id:String(zoneId), metric, bucket_seconds:String(range.bucket)});
     const eventQuery = new URLSearchParams({from:range.from.toISOString(), to:range.to.toISOString(), zone_id:String(zoneId)});
     Promise.all([
-      fetchJson<{points:HistoryPoint[]}>(`/api/devices/${encodeURIComponent(device.id)}/history?${query}`,{signal:controller.signal}),
-      fetchJson<WateringEvent[]>(`/api/devices/${encodeURIComponent(device.id)}/events?${eventQuery}`,{signal:controller.signal}),
+      fetchJson<{points:HistoryPoint[]}>(`devices/${encodeURIComponent(device.id)}/history?${query}`,{signal:controller.signal}),
+      fetchJson<WateringEvent[]>(`devices/${encodeURIComponent(device.id)}/events?${eventQuery}`,{signal:controller.signal}),
     ]).then(([history,events]) => { if (!controller.signal.aborted) setResult({key,points:history.points,events}); }).catch(reason => { if (!controller.signal.aborted) setFailure({key,message:reason.message}); });
     return () => controller.abort();
   },[device.id,zoneId,metric,range,key]);
