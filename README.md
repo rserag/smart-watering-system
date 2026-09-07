@@ -119,6 +119,17 @@ the bot token or chat ID.
 
 ## Dashboard data
 
+The overview puts zones first, with controller diagnostics and Telegram under
+**System**. Select a zone and choose **Edit name** to save a name of up to 60
+characters. Names are shared across signed-in dashboards for that controller;
+leave the field blank to return to **Zone 1**, **Zone 2**, and so on. Names are
+dashboard metadata and do not change firmware settings or watering behavior.
+
+On the first backend upgrade, an additive `zone_settings` table preserves the
+previous **Tomatoes** label for zone 1 of existing controllers. Later starts
+preserve saved names and explicit resets. No telemetry or historical rows are
+rewritten, and older application versions can ignore the new table on rollback.
+
 Each telemetry message creates one parent sample and one normalized row per zone. The backend derives watering events from relay transitions and publishes the committed snapshot to authenticated dashboard WebSockets.
 
 Historical queries support 24-hour, 7-day, and 30-day server-side time buckets for moisture, raw/filtered sensor readings, and watering time. CSV export returns raw zone samples for the chosen range.
@@ -129,6 +140,7 @@ Useful endpoints:
 - `WSS /ws/device` for the ESP32
 - `WSS /ws/dashboard` for signed-in browsers
 - `GET /api/devices`
+- `PATCH /api/devices/{id}/zones/{zone_id}` with `{"name":"Tomatoes"}` (signed-in users only; empty name resets the label)
 - `GET /api/devices/{id}/history`
 - `GET /api/devices/{id}/events`
 - `GET /api/devices/{id}/telegram/deliveries`
@@ -148,3 +160,25 @@ cd backend
 set -a; source ../.env; set +a
 .venv/bin/python scripts/verify_e2e.py --host localhost --ca certs/ca.crt
 ```
+
+### Frontend development against a local backend
+
+To use the frontend development server with an independently running local
+backend, set `GARDEN_API_URL`, for example:
+
+```sh
+cd frontend
+GARDEN_API_URL=http://127.0.0.1:18080 pnpm dev
+```
+
+This proxies `/api`, `/auth`, and `/ws` through the frontend origin. Set the
+backend's `FRONTEND_URL` to the URL printed by the frontend server. This mode
+uses Vinext's Node development server so the Worker emulator does not claim the
+backend's WebSocket upgrades; the production build remains unchanged.
+
+`backend/scripts/verify_zone_names.py` verifies label persistence, validation,
+controller isolation, live updates, and a second dashboard session against an
+**isolated local development database**. It refuses remote hosts and requires
+`AUTH_MODE=development` plus `DEVICE_SHARED_TOKEN` in the script environment.
+It creates only the `preview-garden` and `preview-second-controller` fixtures;
+`--hold` keeps their simulated telemetry running for a local UI preview.
