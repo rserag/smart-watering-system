@@ -22,6 +22,14 @@ class Device(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
+class ZoneSettings(Base):
+    __tablename__ = "zone_settings"
+
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    zone_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(60))
+
+
 class TelemetrySample(Base):
     __tablename__ = "telemetry_samples"
     __table_args__ = (

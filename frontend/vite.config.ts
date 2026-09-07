@@ -34,7 +34,7 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ command }) => {
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= 'false';
@@ -46,16 +46,24 @@ export default defineConfig(async () => {
 
   return {
     css: { postcss: { plugins: [tailwindcss()] } },
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
+      ...(process.env.GARDEN_API_URL ? {
+        proxy: Object.fromEntries(['/api', '/auth', '/ws'].map((path) => [path, {
+          target: process.env.GARDEN_API_URL,
+          ws: path === '/ws',
+        }])),
+      } : {}),
+    },
     plugins: [
       vinext(),
       sites(),
-      cloudflare({
+      // The Worker emulator claims all WebSocket upgrades. Use Vinext's Node
+      // dev server when proxying the existing FastAPI control plane locally.
+      ...(command === 'serve' && process.env.GARDEN_API_URL ? [] : [cloudflare({
         viteEnvironment: { name: 'rsc', childEnvironments: ['ssr'] },
         config: localBindingConfig,
-      }),
+      })]),
     ],
   };
 });

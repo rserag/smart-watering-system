@@ -8,11 +8,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.middleware.sessions import SessionMiddleware
@@ -31,7 +31,9 @@ from app.models import (
     UserSession,
     WateringEvent,
     ZoneSample,
+    ZoneSettings,
 )
+from app.zone_settings import ZoneNameRequest, legacy_zone_names_query, save_zone_name_query
 from app.protocol import (
     CommandAck,
     CommandRequest,
@@ -53,7 +55,10 @@ def utcnow() -> datetime:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     async with engine.begin() as connection:
+        needs_legacy_names = not await connection.run_sync(lambda sync: inspect(sync).has_table("zone_settings"))
         await connection.run_sync(Base.metadata.create_all)
+        if needs_legacy_names:
+            await connection.execute(legacy_zone_names_query())
     yield
     await engine.dispose()
 
@@ -69,7 +74,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["Content-Type"],
 )
 app.include_router(auth_router)
@@ -102,6 +107,8 @@ def latest_telemetry_query(device_id: str):
 async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, Any]:
     latest_result = await session.execute(latest_telemetry_query(device.id))
     latest = latest_result.scalar_one_or_none()
+    names_result = await session.execute(select(ZoneSettings).where(ZoneSettings.device_id == device.id))
+    zone_names = {item.zone_id: item.name for item in names_result.scalars()}
     zones: list[dict[str, Any]] = []
     wifi_rssi: int | None = None
     telegram_status: dict[str, Any] = {
@@ -140,6 +147,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
             zones.append(
                 {
                     "id": zone.zone_id,
+                    "name": zone_names.get(zone.zone_id),
                     "raw": zone.raw,
                     "filteredRaw": zone.filtered_raw,
                     "moisturePercent": zone.moisture_percent,
@@ -193,6 +201,31 @@ async def get_latest(
     if device is None:
         raise HTTPException(status_code=404, detail="Unknown device")
     return await latest_snapshot(session, device)
+
+
+@app.patch("/api/devices/{device_id}/zones/{zone_id}")
+async def update_zone_name(
+    device_id: str,
+    zone_id: Annotated[int, Path(ge=1, le=16)],
+    request: ZoneNameRequest,
+    _: Annotated[UserSession, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    if await session.get(Device, device_id) is None:
+        raise HTTPException(status_code=404, detail="Unknown device")
+    known_zone = await session.scalar(
+        select(ZoneSample.id).where(
+            ZoneSample.device_id == device_id, ZoneSample.zone_id == zone_id,
+        ).limit(1)
+    )
+    if known_zone is None:
+        raise HTTPException(status_code=404, detail="Unknown zone")
+    name = request.name or None
+    await session.execute(save_zone_name_query(device_id, zone_id, name))
+    await session.commit()
+    zone = {"id": zone_id, "name": name}
+    await dashboard_hub.broadcast({"type": "zone.updated", "deviceId": device_id, "zone": zone})
+    return zone
 
 
 def telegram_delivery_dict(delivery: TelegramDelivery) -> dict[str, Any]:
