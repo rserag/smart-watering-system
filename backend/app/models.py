@@ -30,6 +30,14 @@ class ZoneSettings(Base):
     name: Mapped[str | None] = mapped_column(String(60))
 
 
+class DeviceConfiguration(Base):
+    __tablename__ = "device_configurations"
+
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    revision: Mapped[int] = mapped_column(Integer)
+    zones: Mapped[list] = mapped_column(JSONB)
+
+
 class TelemetrySample(Base):
     __tablename__ = "telemetry_samples"
     __table_args__ = (

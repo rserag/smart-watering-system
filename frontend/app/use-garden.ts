@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { type Device, type Me, type TelegramDelivery, fetchJson } from './garden-shared';
+import { type Device, type Me, type TelegramDelivery, fetchJson, mergeDeliveries } from './garden-shared';
 
 export function useGarden() {
   const [me, setMe] = useState<Me | null>(null);
@@ -11,6 +11,7 @@ export function useGarden() {
   const [loading, setLoading] = useState(true);
   const [connection, setConnection] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
   const [now, setNow] = useState(0);
+  const [snapshotVersion, setSnapshotVersion] = useState(0);
 
   const load = useCallback(() => fetchJson<Me>('me').then(async identity => {
       setMe(identity);
@@ -49,6 +50,7 @@ export function useGarden() {
           const message = JSON.parse(event.data);
           if (message.type === 'snapshot') {
             setDevices(message.devices);
+            setSnapshotVersion(version => version + 1);
             setError('');
             setConnection('live');
             setNow(Date.now());
@@ -56,7 +58,7 @@ export function useGarden() {
           } else if (message.type === 'zone.updated') {
             updateZoneName(message.deviceId, message.zone.id, message.zone.name);
           } else if (message.type === 'telegram.delivery' && message.delivery) {
-            setDeliveries(current => [message.delivery, ...current.filter(item => item.eventId !== message.delivery.eventId)].slice(0, 100));
+            setDeliveries(current => mergeDeliveries(current, [message.delivery]).slice(0, 100));
           } else if (message.device) {
             setDevices(current => {
               const previous = current.find(item => item.id === message.device.id);
@@ -94,5 +96,5 @@ export function useGarden() {
   }, [me?.authenticated, updateZoneName]);
 
   const reload = () => { setLoading(true); setError(''); return load(); };
-  return { me, devices, deliveries, error, loading, connection, now, reload, updateZoneName };
+  return { me, devices, deliveries, error, loading, connection, now, snapshotVersion, reload, updateZoneName };
 }

@@ -8,13 +8,13 @@ import SystemView from './system-view';
 import HistoryView from './history-view';
 
 type View = 'live' | 'history' | 'system';
-type Navigation = { view: View; zone: number; device: string };
+type Navigation = { view: View; zone: number; device: string; period: string; metric: string };
 
 function readNavigation(): Navigation {
   const query = new URLSearchParams(window.location.search);
   const view = query.get('view');
   const zone = Number(query.get('zone') ?? 1);
-  return { view: view === 'history' || view === 'system' ? view : 'live', zone: Number.isInteger(zone) && zone > 0 && zone <= 16 ? zone : 1, device: query.get('device') ?? '' };
+  return { view: view === 'history' || view === 'system' ? view : 'live', zone: Number.isInteger(zone) && zone > 0 && zone <= 16 ? zone : 1, device: query.get('device') ?? '', period: ['7d','30d'].includes(query.get('period') ?? '') ? query.get('period')! : '24h', metric: ['filteredRaw','raw','wateringOnMs'].includes(query.get('metric') ?? '') ? query.get('metric')! : 'moisturePercent' };
 }
 
 function zoneStatus(zone: Zone) {
@@ -27,7 +27,7 @@ function zoneStatus(zone: Zone) {
 
 export default function Dashboard() {
   const garden = useGarden();
-  const [navigation, setNavigation] = useState<Navigation>({ view: 'live', zone: 1, device: '' });
+  const [navigation, setNavigation] = useState<Navigation>({ view: 'live', zone: 1, device: '', period: '24h', metric: 'moisturePercent' });
   const detailsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const read = () => setNavigation(readNavigation());
@@ -39,6 +39,8 @@ export default function Dashboard() {
     const url = new URL(window.location.href);
     url.searchParams.set('view', next.view);
     url.searchParams.set('zone', String(next.zone));
+    url.searchParams.set('period', next.period);
+    url.searchParams.set('metric', next.metric);
     if (next.device) url.searchParams.set('device', next.device);
     window.history.pushState(null, '', url);
     setNavigation(next);
@@ -91,7 +93,7 @@ export default function Dashboard() {
             </button>;
           })}</div> : <section className="garden-empty"><h2>No zone readings yet</h2><p>The controller is connected. Waiting for its first zone update.</p></section>}
           {activeZone && <div ref={detailsRef}><ZoneDetails key={`${selected.id}-${activeZone.id}`} deviceId={selected.id} zone={activeZone} onSaved={garden.updateZoneName} onHistory={() => navigate({view:'history', zone:activeZone.id})} /></div>}
-        </> : navigation.view === 'history' ? <HistoryView device={selected} zoneId={activeZone?.id ?? navigation.zone} onZoneChange={zone => navigate({zone})} /> : <SystemView key={selected.id} selected={{...selected, online:!!live}} deliveries={garden.deliveries} />}
+        </> : navigation.view === 'history' ? <HistoryView period={navigation.period} metric={navigation.metric} onFilterChange={navigate} device={selected} zoneId={activeZone?.id ?? navigation.zone} onZoneChange={zone => navigate({zone})} /> : <SystemView key={selected.id} selected={{...selected, online:!!live}} deliveries={garden.deliveries} snapshotVersion={garden.snapshotVersion} />}
       </>}
     </main>
   </div>;

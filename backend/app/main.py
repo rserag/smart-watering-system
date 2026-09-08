@@ -1,7 +1,5 @@
 import asyncio
-import csv
 import hmac
-import io
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -20,11 +18,14 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.auth import lookup_user_session, require_user, router as auth_router
 from app.config import get_settings
 from app.database import SessionLocal, engine, get_session
+from app.device_configuration import ConfigurationSnapshot, active_thresholds, save_configuration_query
+from app.history_export import history_csv
 from app.hubs import dashboard_hub, device_hub
 from app.models import (
     Base,
     Command,
     Device,
+    DeviceConfiguration,
     MainTankState,
     TelemetrySample,
     TelegramDelivery,
@@ -109,6 +110,8 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
     latest = latest_result.scalar_one_or_none()
     names_result = await session.execute(select(ZoneSettings).where(ZoneSettings.device_id == device.id))
     zone_names = {item.zone_id: item.name for item in names_result.scalars()}
+    configuration = await session.get(DeviceConfiguration, device.id)
+    thresholds = active_thresholds(configuration, device.config_revision)
     zones: list[dict[str, Any]] = []
     wifi_rssi: int | None = None
     telegram_status: dict[str, Any] = {
@@ -148,6 +151,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
                 {
                     "id": zone.zone_id,
                     "name": zone_names.get(zone.zone_id),
+                    "thresholds": thresholds.get(zone.zone_id),
                     "raw": zone.raw,
                     "filteredRaw": zone.filtered_raw,
                     "moisturePercent": zone.moisture_percent,
@@ -369,28 +373,16 @@ async def get_events(
 async def export_history(
     device_id: str,
     _: Annotated[UserSession, Depends(require_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
     from_time: datetime = Query(alias="from"),
     to_time: datetime = Query(alias="to"),
     zone_id: int | None = Query(default=None, ge=1, le=16),
 ) -> StreamingResponse:
-    statement = select(ZoneSample).where(
-        ZoneSample.device_id == device_id,
-        ZoneSample.received_at >= from_time,
-        ZoneSample.received_at <= to_time,
-    )
-    if zone_id is not None:
-        statement = statement.where(ZoneSample.zone_id == zone_id)
-    result = await session.execute(statement.order_by(ZoneSample.received_at).limit(100000))
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["received_at", "device_id", "zone_id", "raw", "filtered_raw", "moisture_percent", "sensor_valid", "phase", "relay_on", "watering_ms", "fault"])
-    for row in result.scalars():
-        writer.writerow([row.received_at.isoformat(), row.device_id, row.zone_id, row.raw, row.filtered_raw, row.moisture_percent, row.sensor_valid, row.phase, row.relay_on, row.watering_on_ms_this_cycle, row.fault or ""])
+    if from_time.tzinfo is None or to_time.tzinfo is None or to_time <= from_time or to_time - from_time > timedelta(days=366):
+        raise HTTPException(status_code=400, detail="Invalid history range")
     return StreamingResponse(
-        iter([output.getvalue()]),
+        history_csv(device_id, zone_id, from_time, to_time),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{device_id}-history.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="watering-history.csv"'},
     )
 
 
@@ -738,6 +730,11 @@ async def device_websocket(websocket: WebSocket) -> None:
             }
         )
         await deliver_queued_commands(device_id)
+        requested_revision = hello.config_revision
+        async def request_configuration():
+            await websocket.send_json({"type": "config.get", "schemaVersion": hello.schema_version,
+                                       "deviceId": device_id, "requestId": str(uuid4())})
+        await request_configuration()
         async with SessionLocal() as session:
             device = await session.get(Device, device_id)
             await dashboard_hub.broadcast({"type": "device.status", "device": await latest_snapshot(session, device)})
@@ -752,6 +749,9 @@ async def device_websocket(websocket: WebSocket) -> None:
                     if telemetry.device_id != device_id:
                         await websocket.close(code=4003, reason="Device ID changed")
                         return
+                    if telemetry.config_revision != requested_revision:
+                        requested_revision = telemetry.config_revision
+                        await request_configuration()
                     snapshot = await record_telemetry(telemetry)
                     if snapshot is not None:
                         await dashboard_hub.broadcast({"type": "telemetry", "device": snapshot})
@@ -778,7 +778,17 @@ async def device_websocket(websocket: WebSocket) -> None:
                         await dashboard_hub.broadcast(
                             {"type": "telegram.delivery", "delivery": delivery}
                         )
-                elif message_type in {"config.ack", "config.snapshot"}:
+                elif message_type == "config.snapshot":
+                    configuration = ConfigurationSnapshot.model_validate(raw)
+                    if configuration.deviceId != device_id:
+                        await websocket.close(code=4003, reason="Device ID changed")
+                        return
+                    async with SessionLocal() as session:
+                        await session.execute(save_configuration_query(configuration))
+                        await session.commit()
+                        device = await session.get(Device, device_id)
+                        await dashboard_hub.broadcast({"type": "device.status", "device": await latest_snapshot(session, device)})
+                elif message_type == "config.ack":
                     logger.info("device configuration message device_id=%s type=%s", device_id, message_type)
                 else:
                     logger.warning("unsupported device message device_id=%s type=%s", device_id, message_type)

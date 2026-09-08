@@ -1,6 +1,6 @@
 export type Me = { authenticated: boolean; authMode: 'development' | 'google'; email?: string; name?: string };
 export type Zone = {
-  id: number; name?: string | null; raw: number; filteredRaw: number; moisturePercent: number; sensorValid: boolean;
+  id: number; name?: string | null; thresholds?: {startWateringPercent: number; stopWateringPercent: number} | null; raw: number; filteredRaw: number; moisturePercent: number; sensorValid: boolean;
   phase: string; relayOn: boolean; wateringOnMsThisCycle: number; fault: string | null; lastWateredAt: string | null;
 };
 export type Device = {
@@ -47,8 +47,7 @@ export function formatDuration(value: number | null) {
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
 
-export function historyRange(period: string) {
-  const to = new Date();
+export function historyRange(period: string, to = new Date()) {
   const hours = period === '7d' ? 24 * 7 : period === '30d' ? 24 * 30 : 24;
   return { from: new Date(to.getTime() - hours * 3600_000), to, bucket: period === '30d' ? 7200 : period === '7d' ? 1800 : 300 };
 }
@@ -66,4 +65,18 @@ export async function fetchJson<T>(path: string, init?: RequestInit): Promise<T>
     throw new Error(response.status === 401 ? 'Your session has expired. Please sign in again.' : typeof detail === 'string' ? detail : `Unable to complete the request (${response.status}). Please try again.`);
   }
   return response.json() as Promise<T>;
+}
+
+// Sequence numbers order controller reports; timestamps break ties for server-side updates.
+export function mergeDeliveries(...groups: TelegramDelivery[][]): TelegramDelivery[] {
+  const latest = new Map<string, TelegramDelivery>();
+  for (const delivery of groups.flat()) {
+    const key = `${delivery.deviceId}/${delivery.eventId}`;
+    const previous = latest.get(key);
+    if (!previous || delivery.updateSequence > previous.updateSequence ||
+        (delivery.updateSequence === previous.updateSequence && Date.parse(delivery.updatedAt) > Date.parse(previous.updatedAt))) {
+      latest.set(key, delivery);
+    }
+  }
+  return [...latest.values()].sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
 }

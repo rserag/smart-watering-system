@@ -173,7 +173,8 @@ input[aria-invalid='true'] { border-color:var(--danger); }
  .garden-profile { display:none; }
  .garden-content { padding:24px 18px 36px; }
  .garden-page-header { align-items:start; margin-bottom:20px; gap:12px; }
- .garden-header-status .garden-caption { display:none; }
+ .garden-header-status { max-width:48%; }
+ .garden-header-status .garden-caption { font-size:.75rem; }
  .garden-health-strip { gap:8px 16px; padding:13px 14px; margin-bottom:22px; }
  .garden-zones { gap:12px; }
  .garden-zone { padding:17px; }
@@ -206,3 +207,7 @@ input[aria-invalid='true'] { border-color:var(--danger); }
 @media (prefers-reduced-motion:no-preference) {
  .garden-button,.garden-zone,.garden-nav button { transition:background .15s,border-color .15s; }
 }
+
+.garden-stop-threshold { stroke:#3984b0; }
+.garden-stop-reference { border-color:#3984b0; }
+.garden-threshold-note { margin-top:12px; }
