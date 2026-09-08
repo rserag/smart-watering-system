@@ -152,7 +152,7 @@ test('CSV download retains every supplied row and the selected range', async ({p
 test('shows actual thresholds and last report on every viewport', async ({page}) => {
   await garden(page);
   await page.goto('/?view=history');
-  await expect(page.getByText('Start below 27%')).toBeVisible();
+  await expect(page.getByText('Start at 27% or lower')).toBeVisible();
   await expect(page.getByText('Stop at 62%')).toBeVisible();
   await expect(page.getByText(/Last report/)).toBeVisible();
   await expect(page.getByText('30% reference')).toHaveCount(0);
