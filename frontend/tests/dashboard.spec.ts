@@ -102,17 +102,17 @@ test('failed refresh retains readings and retry recovers', async ({page}) => {
 test('history filters survive navigation, reload and back', async ({page}) => {
   await garden(page);
   await page.goto('/?view=history');
-  await page.getByLabel('Period',{exact:true}).selectOption('7d');
-  await page.getByLabel('Metric',{exact:true}).selectOption('raw');
+  await page.getByRole('combobox',{name:'Period',exact:true}).selectOption('7d');
+  await page.getByRole('combobox',{name:'Metric',exact:true}).selectOption('raw');
   await page.getByRole('button',{name:'System',exact:true}).click();
   await page.getByRole('button',{name:'History',exact:true}).click();
-  await expect(page.getByLabel('Period',{exact:true})).toHaveValue('7d');
-  await expect(page.getByLabel('Metric',{exact:true})).toHaveValue('raw');
+  await expect(page.getByRole('combobox',{name:'Period',exact:true})).toHaveValue('7d');
+  await expect(page.getByRole('combobox',{name:'Metric',exact:true})).toHaveValue('raw');
   await page.reload();
-  await expect(page.getByLabel('Metric',{exact:true})).toHaveValue('raw');
-  await page.getByLabel('Period',{exact:true}).selectOption('30d');
+  await expect(page.getByRole('combobox',{name:'Metric',exact:true})).toHaveValue('raw');
+  await page.getByRole('combobox',{name:'Period',exact:true}).selectOption('30d');
   await page.goBack();
-  await expect(page.getByLabel('Period',{exact:true})).toHaveValue('7d');
+  await expect(page.getByRole('combobox',{name:'Period',exact:true})).toHaveValue('7d');
 });
 
 test('reconnect refetches deliveries and ignores older live reports', async ({page}) => {
