@@ -1,7 +1,7 @@
 'use client';
 
-import { useEffect, useId, useRef, useState } from 'react';
-import { type Device, type HistoryPoint, type WateringEvent, fetchJson, formatDuration, formatTime, historyRange, zoneName } from './garden-shared';
+import { useEffect, useId, useRef, useState, useMemo } from 'react';
+import { type Device, type Zone, type HistoryPoint, type WateringEvent, fetchJson, formatDuration, formatTime, historyRange, zoneName } from './garden-shared';
 
 const metrics: Record<string, {label: string; unit: string}> = {
   moisturePercent: {label:'Soil moisture', unit:'%'},
@@ -10,10 +10,10 @@ const metrics: Record<string, {label: string; unit: string}> = {
   wateringOnMs: {label:'Cycle watering time', unit:'ms'},
 };
 
-function HistoryChart({points, events, range, metric}: {points: HistoryPoint[]; events: WateringEvent[]; range: ReturnType<typeof historyRange>; metric: string}) {
+function HistoryChart({points, events, range, metric, thresholds}: {points: HistoryPoint[]; events: WateringEvent[]; range: ReturnType<typeof historyRange>; metric: string; thresholds: Zone['thresholds']}) {
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(640);
-  const [focused, setFocused] = useState<number | null>(null);
+  const [focused, setFocused] = useState<string | null>(null);
   const clipId = useId();
   useEffect(() => {
     const node = container.current;
@@ -32,7 +32,8 @@ function HistoryChart({points, events, range, metric}: {points: HistoryPoint[]; 
   const y = (value: number) => top + (max - value) / Math.max(max - min, 1) * (height - top - bottom);
   const line = points.map((point, index) => `${index ? 'L' : 'M'}${x(point.timestamp)},${y(point.average)}`).join(' ');
   const band = points.map((point, index) => `${index ? 'L' : 'M'}${x(point.timestamp)},${y(point.maximum)}`).join(' ') + ' ' + [...points].reverse().map(point => `L${x(point.timestamp)},${y(point.minimum)}`).join(' ') + ' Z';
-  const pointIndex = Math.min(focused ?? points.length - 1, points.length - 1);
+  const pointIndex = focused === null ? points.length - 1 : points.reduce((closest, candidate, index) =>
+    Math.abs(Date.parse(candidate.timestamp) - Date.parse(focused)) < Math.abs(Date.parse(points[closest].timestamp) - Date.parse(focused)) ? index : closest, 0);
   const point = points[pointIndex];
   const tickCount = width < 500 ? 3 : 5;
   const unit = metrics[metric].unit;
@@ -44,7 +45,7 @@ function HistoryChart({points, events, range, metric}: {points: HistoryPoint[]; 
       const pointer = (event.clientX - bounds.left) * width / bounds.width;
       let closest = 0;
       points.forEach((candidate, index) => { if (Math.abs(x(candidate.timestamp) - pointer) < Math.abs(x(points[closest].timestamp) - pointer)) closest = index; });
-      setFocused(closest);
+      setFocused(points[closest].timestamp);
     }}>
       <defs><clipPath id={clipId}><rect x={left} y={top} width={width-left-right} height={height-top-bottom} /></clipPath></defs>
       <text x={left} y={14} className="garden-axis-unit">{unit === '%' ? 'Moisture (%)' : unit === 'ms' ? 'Time (ms)' : 'Sensor counts'}</text>
@@ -52,7 +53,10 @@ function HistoryChart({points, events, range, metric}: {points: HistoryPoint[]; 
       <g clipPath={`url(#${clipId})`}>
         <path className="garden-history-range" d={band} />
         {events.map(event => <rect className="garden-event-band" key={event.id} x={x(event.startedAt)} y={top} width={Math.max(3,x(event.endedAt ?? range.to.toISOString())-x(event.startedAt))} height={height-top-bottom}><title>{formatTime(event.startedAt)} · Watering · {formatDuration(event.durationMs)}</title></rect>)}
-        {metric === 'moisturePercent' && <line className="garden-threshold" x1={left} x2={width-right} y1={y(30)} y2={y(30)} />}
+        {metric === 'moisturePercent' && thresholds && <>
+          <line className="garden-threshold" x1={left} x2={width-right} y1={y(thresholds.startWateringPercent)} y2={y(thresholds.startWateringPercent)} />
+          <line className="garden-threshold garden-stop-threshold" x1={left} x2={width-right} y1={y(thresholds.stopWateringPercent)} y2={y(thresholds.stopWateringPercent)} />
+        </>}
         <path className="garden-history-line" d={line} />
         <line className="garden-chart-guide" x1={x(point.timestamp)} x2={x(point.timestamp)} y1={top} y2={height-bottom} />
         <circle className="garden-chart-point" cx={x(point.timestamp)} cy={y(point.average)} r={4} />
@@ -62,20 +66,23 @@ function HistoryChart({points, events, range, metric}: {points: HistoryPoint[]; 
         return <text key={index} x={x(date)} y={height-bottom+24} textAnchor={index === 0 ? 'start' : index === tickCount-1 ? 'end' : 'middle'}>{new Intl.DateTimeFormat(undefined, range.bucket === 300 ? {hour:'2-digit',minute:'2-digit'} : {month:'short',day:'numeric'}).format(new Date(date))}</text>;
       })}
     </svg>
-    <div className="garden-chart-legend"><span><i className="garden-legend-line" />Average</span><span><i className="garden-legend-band" />Minimum–maximum</span>{events.length > 0 && <span><i className="garden-legend-event" />Watering</span>}{metric === 'moisturePercent' && <span><i className="garden-legend-reference" />30% reference</span>}</div>
+    <div className="garden-chart-legend"><span><i className="garden-legend-line" />Average</span><span><i className="garden-legend-band" />Minimum–maximum</span>{events.length > 0 && <span><i className="garden-legend-event" />Watering</span>}{metric === 'moisturePercent' && thresholds && <><span><i className="garden-legend-reference" />Start at {thresholds.startWateringPercent}% or lower</span><span><i className="garden-legend-reference garden-stop-reference" />Stop at {thresholds.stopWateringPercent}%</span></>}</div>
+    {metric === 'moisturePercent' && <p className="garden-caption garden-threshold-note">{thresholds ? 'Current controller thresholds; historical settings may differ.' : 'Controller thresholds are not available yet.'}</p>}
     <label className="garden-reading-label" htmlFor={`${clipId}-reading`}>Inspect a reading <span>{formatTime(point.timestamp)} · <strong>{number(point.average)} {unit}</strong></span></label>
-    <input className="garden-reading-slider" id={`${clipId}-reading`} type="range" min={0} max={Math.max(0,points.length-1)} value={pointIndex} onChange={event => setFocused(Number(event.target.value))} aria-valuetext={`${formatTime(point.timestamp)}, average ${number(point.average)} ${unit}, minimum ${number(point.minimum)}, maximum ${number(point.maximum)}`} />
+    <input className="garden-reading-slider" id={`${clipId}-reading`} type="range" min={0} max={Math.max(0,points.length-1)} value={pointIndex} onChange={event => setFocused(points[Number(event.target.value)].timestamp)} aria-valuetext={`${formatTime(point.timestamp)}, average ${number(point.average)} ${unit}, minimum ${number(point.minimum)}, maximum ${number(point.maximum)}`} />
   </div>;
 }
 
-export default function HistoryView({device, zoneId, onZoneChange}: {device:Device; zoneId:number; onZoneChange:(zone:number)=>void}) {
-  const [period,setPeriod] = useState('24h');
-  const [metric,setMetric] = useState('moisturePercent');
-  const [range,setRange] = useState(() => historyRange('24h'));
-  const [result,setResult] = useState<{key:string; points:HistoryPoint[]; events:WateringEvent[]} | null>(null);
+export default function HistoryView({device, zoneId, onZoneChange, period, metric, onFilterChange}: {
+  device:Device; zoneId:number; onZoneChange:(zone:number)=>void; period:string; metric:string;
+  onFilterChange:(filters:{period?:string; metric?:string})=>void;
+}) {
+  const [refreshAt,setRefreshAt] = useState(() => Date.now());
+  const range = useMemo(() => historyRange(period, new Date(refreshAt)), [period,refreshAt]);
+  const [result,setResult] = useState<{key:string; range:ReturnType<typeof historyRange>; points:HistoryPoint[]; events:WateringEvent[]} | null>(null);
   const [failure,setFailure] = useState<{key:string; message:string} | null>(null);
-  const key = `${device.id}/${zoneId}/${metric}/${range.from.toISOString()}`;
-  useEffect(() => { const timer = setInterval(() => setRange(historyRange(period)),60000); return () => clearInterval(timer); },[period]);
+  const key = `${device.id}/${zoneId}/${metric}/${period}`;
+  useEffect(() => { const timer = setInterval(() => setRefreshAt(Date.now()),60000); return () => clearInterval(timer); },[period]);
   useEffect(() => {
     const controller = new AbortController();
     const query = new URLSearchParams({from:range.from.toISOString(), to:range.to.toISOString(), zone_id:String(zoneId), metric, bucket_seconds:String(range.bucket)});
@@ -83,18 +90,22 @@ export default function HistoryView({device, zoneId, onZoneChange}: {device:Devi
     Promise.all([
       fetchJson<{points:HistoryPoint[]}>(`devices/${encodeURIComponent(device.id)}/history?${query}`,{signal:controller.signal}),
       fetchJson<WateringEvent[]>(`devices/${encodeURIComponent(device.id)}/events?${eventQuery}`,{signal:controller.signal}),
-    ]).then(([history,events]) => { if (!controller.signal.aborted) setResult({key,points:history.points,events}); }).catch(reason => { if (!controller.signal.aborted) setFailure({key,message:reason.message}); });
+    ]).then(([history,events]) => { if (!controller.signal.aborted) { setResult({key,range,points:history.points,events}); setFailure(null); } }).catch(reason => { if (!controller.signal.aborted) setFailure({key,message:reason.message}); });
     return () => controller.abort();
   },[device.id,zoneId,metric,range,key]);
   const data = result?.key === key ? result : null;
   const error = failure?.key === key ? failure.message : '';
-  const selectedZone = device.zones.find(zone => zone.id === zoneId) ?? {id:zoneId};
-  const exportQuery = new URLSearchParams({from:range.from.toISOString(),to:range.to.toISOString(),zone_id:String(zoneId)});
+  const selectedZone = device.zones.find(zone => zone.id === zoneId);
+  const displayedRange = data?.range ?? range;
+  const refreshing = !!data && data.range.to.getTime() !== range.to.getTime() && !error;
+  const exportQuery = new URLSearchParams({from:displayedRange.from.toISOString(),to:displayedRange.to.toISOString(),zone_id:String(zoneId)});
   return <>
-    <div className="garden-history-toolbar"><label>Zone<select value={zoneId} onChange={event => onZoneChange(Number(event.target.value))}>{device.zones.map(zone => <option value={zone.id} key={zone.id}>{zoneName(zone)}{zone.name ? ` · Zone ${zone.id}` : ''}</option>)}</select></label><label>Metric<select value={metric} onChange={event => setMetric(event.target.value)}>{Object.entries(metrics).map(([value,item]) => <option key={value} value={value}>{item.label}</option>)}</select></label><label>Period<select value={period} onChange={event => {setPeriod(event.target.value);setRange(historyRange(event.target.value));}}><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label><a className="garden-button garden-export" href={`/api/devices/${encodeURIComponent(device.id)}/history.csv?${exportQuery}`}>Export CSV</a></div>
-    <section className="garden-chart-panel" aria-label="Zone history"><div className="garden-chart-heading"><div><p className="garden-eyebrow">{zoneName(selectedZone)}</p><h2>{metrics[metric].label}</h2></div><span className="garden-caption">{formatTime(range.from.toISOString())} – {formatTime(range.to.toISOString())}</span></div>
-      {error ? <div className="garden-chart-empty" role="alert"><p>{error}</p><button className="garden-button" onClick={() => setRange(historyRange(period))}>Try again</button></div> : !data ? <div className="garden-chart-empty" role="status">Loading readings…</div> : data.points.length ? <HistoryChart key={`${device.id}-${zoneId}-${metric}`} points={data.points} events={data.events} range={range} metric={metric} /> : <div className="garden-chart-empty">No readings in this period.</div>}
+    <div className="garden-history-toolbar"><label>Zone<select value={zoneId} onChange={event => onZoneChange(Number(event.target.value))}>{device.zones.map(zone => <option value={zone.id} key={zone.id}>{zoneName(zone)}{zone.name ? ` · Zone ${zone.id}` : ''}</option>)}</select></label><label>Metric<select value={metric} onChange={event => onFilterChange({metric:event.target.value})}>{Object.entries(metrics).map(([value,item]) => <option key={value} value={value}>{item.label}</option>)}</select></label><label>Period<select value={period} onChange={event => {onFilterChange({period:event.target.value});setRefreshAt(Date.now());}}><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></label><a className="garden-button garden-export" href={`/api/devices/${encodeURIComponent(device.id)}/history.csv?${exportQuery}`}>Export CSV</a></div>
+    <section className="garden-chart-panel" aria-label="Zone history"><div className="garden-chart-heading"><div><p className="garden-eyebrow">{zoneName(selectedZone ?? {id:zoneId})}</p><h2>{metrics[metric].label}</h2></div><span className="garden-caption">{formatTime(displayedRange.from.toISOString())} – {formatTime(displayedRange.to.toISOString())}</span></div>
+      {refreshing && <p className="garden-caption" role="status">Updating readings…</p>}
+      {error && data && <div className="garden-error" role="alert"><span>Could not refresh. Showing the previous readings.</span><button className="garden-button" onClick={() => setRefreshAt(Date.now())}>Try again</button></div>}
+      {error && !data ? <div className="garden-chart-empty" role="alert"><p>{error}</p><button className="garden-button" onClick={() => setRefreshAt(Date.now())}>Try again</button></div> : !data ? <div className="garden-chart-empty" role="status">Loading readings…</div> : data.points.length ? <HistoryChart key={key} points={data.points} events={data.events} range={displayedRange} metric={metric} thresholds={selectedZone?.thresholds} /> : <div className="garden-chart-empty">No readings in this period.</div>}
     </section>
-    <section className="garden-events" aria-labelledby="watering-events-heading"><div className="garden-section-heading"><h2 id="watering-events-heading">Watering events</h2><span className="garden-caption">{zoneName(selectedZone)}</span></div>{data ? data.events.length ? <ul>{data.events.map(event => <li key={event.id}><time dateTime={event.startedAt}>{formatTime(event.startedAt)}</time><span><strong>{zoneName(device.zones.find(zone => zone.id === event.zoneId) ?? {id:event.zoneId})}</strong><small>{event.source} watering · {event.status}</small></span><strong>{formatDuration(event.durationMs)}</strong></li>)}</ul> : <p className="garden-events-empty">No watering events in this period.</p> : <p className="garden-events-empty">{error ? 'Watering events are unavailable.' : 'Loading watering events…'}</p>}</section>
+    <section className="garden-events" aria-labelledby="watering-events-heading"><div className="garden-section-heading"><h2 id="watering-events-heading">Watering events</h2><span className="garden-caption">{zoneName(selectedZone ?? {id:zoneId})}</span></div>{data ? data.events.length ? <ul>{data.events.map(event => <li key={event.id}><time dateTime={event.startedAt}>{formatTime(event.startedAt)}</time><span><strong>{zoneName(device.zones.find(zone => zone.id === event.zoneId) ?? {id:event.zoneId})}</strong><small>{event.source} watering · {event.status}</small></span><strong>{formatDuration(event.durationMs)}</strong></li>)}</ul> : <p className="garden-events-empty">No watering events in this period.</p> : <p className="garden-events-empty">{error ? 'Watering events are unavailable.' : 'Loading watering events…'}</p>}</section>
   </>;
 }

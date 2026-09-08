@@ -182,3 +182,26 @@ controller isolation, live updates, and a second dashboard session against an
 `AUTH_MODE=development` plus `DEVICE_SHARED_TOKEN` in the script environment.
 It creates only the `preview-garden` and `preview-second-controller` fixtures;
 `--hold` keeps their simulated telemetry running for a local UI preview.
+
+### History and delivery regression checks
+
+History CSV exports stream all matching rows in bounded batches (up to a 366-day
+range) and close their database cursor when a client disconnects. History keeps
+its selected timestamp and keyboard focus during background refreshes; period
+and metric filters are saved in the URL. Telegram reports merge by update
+sequence and refresh after every dashboard reconnection.
+
+The backend requests the controller's read-only `config.get` report on connection
+and when its reported configuration revision changes. It retains only validated
+zone thresholds in `device_configurations`. Dashboard thresholds are shown only
+when that saved revision matches the controller's current revision; unavailable
+settings are never replaced with invented defaults. No firmware update is needed.
+
+Run `pnpm build` and `pnpm test:e2e` in `frontend` after installing Chromium with
+`pnpm exec playwright install chromium`. The browser suite runs the production
+frontend against isolated HTTP/WebSocket fixtures on port 4173, on desktop and
+mobile viewports. It covers slow/failed refreshes, focus and reading preservation,
+filter navigation/reload, reconnect delivery ordering, large CSV downloads, and
+threshold/timestamp visibility. These checks also run in the production pipeline.
+Backend tests cover full exports beyond 100,000 rows, cancellation cleanup,
+authentication, range validation, and configuration revision/threshold validation.
