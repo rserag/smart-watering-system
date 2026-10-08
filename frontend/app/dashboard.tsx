@@ -92,7 +92,7 @@ export default function Dashboard() {
               <span className="garden-zone-foot">{zone.lastWateredAt ? `Watered ${formatTime(zone.lastWateredAt)}` : 'No recorded watering'}<span aria-hidden="true">↗</span></span>
             </button>;
           })}</div> : <section className="garden-empty"><h2>No zone readings yet</h2><p>The controller is connected. Waiting for its first zone update.</p></section>}
-          {activeZone && <div ref={detailsRef}><ZoneDetails key={`${selected.id}-${activeZone.id}`} deviceId={selected.id} zone={activeZone} onSaved={garden.updateZoneName} onHistory={() => navigate({view:'history', zone:activeZone.id})} /></div>}
+          {activeZone && <div ref={detailsRef}><ZoneDetails key={`${selected.id}-${activeZone.id}`} deviceId={selected.id} zone={activeZone} online={!!live} onSaved={garden.updateZoneName} onHistory={() => navigate({view:'history', zone:activeZone.id})} /></div>}
         </> : navigation.view === 'history' ? <HistoryView period={navigation.period} metric={navigation.metric} onFilterChange={navigate} device={selected} zoneId={activeZone?.id ?? navigation.zone} onZoneChange={zone => navigate({zone})} /> : <SystemView key={selected.id} selected={{...selected, online:!!live}} deliveries={garden.deliveries} snapshotVersion={garden.snapshotVersion} />}
       </>}
     </main>
