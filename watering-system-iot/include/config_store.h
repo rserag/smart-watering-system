@@ -10,6 +10,8 @@ class ConfigStore {
   bool save(const SystemConfig &config);
   bool loadTelegramDebugEnabled(bool &enabled);
   bool saveTelegramDebugEnabled(bool enabled);
+  bool loadTelegramHourlySilent(bool &enabled);
+  bool saveTelegramHourlySilent(bool enabled);
 
  private:
   static uint32_t checksum(const uint8_t *data, size_t length);

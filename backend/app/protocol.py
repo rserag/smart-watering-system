@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DeviceHello(BaseModel):
@@ -15,6 +15,7 @@ class DeviceHello(BaseModel):
     uptime_ms: int = Field(alias="uptimeMs", ge=0)
     direct_telegram: bool = Field(default=False, alias="directTelegram")
     telegram_debug_enabled: bool = Field(default=False, alias="telegramDebugEnabled")
+    telegram_hourly_silent: bool = Field(default=False, alias="telegramHourlySilent")
     telegram_configured: bool = Field(default=False, alias="telegramConfigured")
     telegram_worker_running: bool = Field(default=False, alias="telegramWorkerRunning")
     telegram_time_ready: bool = Field(default=False, alias="telegramTimeReady")
@@ -46,6 +47,7 @@ class TelemetryMessage(BaseModel):
     main_tank_low: bool | None = Field(default=None, alias="mainTankLow")
     direct_telegram: bool = Field(default=False, alias="directTelegram")
     telegram_debug_enabled: bool = Field(default=False, alias="telegramDebugEnabled")
+    telegram_hourly_silent: bool = Field(default=False, alias="telegramHourlySilent")
     telegram_configured: bool = Field(default=False, alias="telegramConfigured")
     telegram_pending_messages: int = Field(default=0, alias="telegramPendingMessages", ge=0, le=255)
     telegram_last_send_succeeded: bool = Field(default=False, alias="telegramLastSendSucceeded")
@@ -86,5 +88,11 @@ class CommandAck(BaseModel):
 
 
 class CommandRequest(BaseModel):
-    command: Literal["zone.water", "zone.stop", "system.stopAll", "fault.clear", "telemetry.request", "config.get", "config.set", "telegram.debug.set", "telegram.debug.send"]
+    command: Literal["zone.water", "zone.stop", "system.stopAll", "fault.clear", "telemetry.request", "config.get", "config.set", "telegram.debug.set", "telegram.debug.send", "telegram.hourlySilent.set"]
     parameters: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_hourly_silent(self):
+        if self.command == "telegram.hourlySilent.set" and type(self.parameters.get("enabled")) is not bool:
+            raise ValueError("enabled must be a boolean")
+        return self

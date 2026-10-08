@@ -8,6 +8,7 @@ export type Device = {
   configRevision: number; automaticWateringEnabled: boolean; lastSeenAt: string; wifiRssi: number | null;
   mainTankLow: boolean | null; mainTankLastChangedAt: string | null; zones: Zone[];
   directTelegram: boolean; telegramDebugEnabled: boolean; telegramConfigured: boolean;
+  telegramHourlySilent: boolean;
   telegramPendingMessages: number; telegramLastSendSucceeded: boolean;
   telegramWorkerRunning: boolean; telegramTimeReady: boolean; telegramLastFailureStage: string | null;
 };
@@ -34,6 +35,12 @@ export function supportsManualTelegramDebug(value: string | null) {
   if (parts.some((part) => !Number.isInteger(part) || part < 0)) return false;
   const [major = 0, minor = 0, patch = 0] = parts;
   return major > 0 || minor > 5 || (minor === 5 && patch >= 1);
+}
+
+export function supportsHourlySilent(value: string | null) {
+  if (!value || !/^\d+\.\d+\.\d+$/.test(value)) return false;
+  const [major, minor] = value.split('.').map(Number);
+  return major > 0 || minor >= 6;
 }
 
 export function formatTime(value: string | null) {

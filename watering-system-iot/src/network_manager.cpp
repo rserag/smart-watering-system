@@ -75,8 +75,10 @@ void NetworkManager::loop(uint32_t now) {
   }
 
   const bool stateChanged = controller_.consumeStateChanged();
+  const bool telegramSettingsChanged = telegram_.consumeSettingsChanged();
   if (webSocketConnected_ &&
-      (stateChanged || now - lastTelemetryAt_ >= config_.telemetryIntervalMs)) {
+      (stateChanged || telegramSettingsChanged ||
+       now - lastTelemetryAt_ >= config_.telemetryIntervalMs)) {
     sendTelemetry(now);
   }
   if (webSocketConnected_) {
@@ -236,6 +238,7 @@ void NetworkManager::handleIncomingText(const uint8_t *payload, size_t length) {
              strcmp(type, "system.stopAll") == 0 ||
              strcmp(type, "fault.clear") == 0 ||
              strcmp(type, "telegram.debug.set") == 0 ||
+             strcmp(type, "telegram.hourlySilent.set") == 0 ||
              strcmp(type, "telegram.debug.send") == 0 ||
              strcmp(type, "telemetry.request") == 0 ||
              strcmp(type, "config.get") == 0) {
@@ -411,6 +414,15 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
         error = "failed to persist Telegram debug setting";
       }
     }
+  } else if (strcmp(type, "telegram.hourlySilent.set") == 0) {
+    if (!root["enabled"].is<bool>()) {
+      error = "enabled must be a boolean";
+    } else {
+      success = telegram_.setHourlySilent(root["enabled"].as<bool>());
+      if (!success) {
+        error = "failed to persist Telegram hourly silent setting";
+      }
+    }
   } else if (strcmp(type, "telegram.debug.send") == 0) {
     const time_t currentTime = time(nullptr);
     const uint32_t expiresAt = root["expiresAtEpoch"] | 0;
@@ -491,6 +503,7 @@ void NetworkManager::sendHello() {
       config_.automaticWateringEnabled;
   document["directTelegram"] = true;
   document["telegramDebugEnabled"] = telegram_.debugEnabled();
+  document["telegramHourlySilent"] = telegram_.hourlySilent();
   document["telegramConfigured"] = telegram_.configured();
   document["telegramWorkerRunning"] = telegram_.workerRunning();
   document["telegramTimeReady"] = telegram_.timeReady();
@@ -515,6 +528,7 @@ void NetworkManager::sendTelemetry(uint32_t now) {
   document["mainTankLow"] = controller_.mainTankLow();
   document["directTelegram"] = true;
   document["telegramDebugEnabled"] = telegram_.debugEnabled();
+  document["telegramHourlySilent"] = telegram_.hourlySilent();
   document["telegramConfigured"] = telegram_.configured();
   document["telegramPendingMessages"] = telegram_.pendingCount();
   document["telegramLastSendSucceeded"] = telegram_.lastSendSucceeded();

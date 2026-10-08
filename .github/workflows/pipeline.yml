@@ -82,6 +82,11 @@ jobs:
           cache: pip
       - name: Install PlatformIO
         run: python -m pip install platformio==6.1.18
+      - name: Check Telegram settings and notification sound policy
+        run: |
+          c++ -std=c++11 -Wall -Wextra -Werror -Iinclude tests/telegram_settings_test.cpp -o "$RUNNER_TEMP/telegram-settings-test"
+          "$RUNNER_TEMP/telegram-settings-test"
+        working-directory: watering-system-iot
       - name: Build with non-secret example configuration
         run: |
           cp include/secrets.h.example include/secrets.h

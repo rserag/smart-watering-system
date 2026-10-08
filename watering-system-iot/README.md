@@ -93,6 +93,10 @@ The Telegram debug preference is stored under a separate NVS key, so changing
 it does not replace the watering configuration or reset calibration. Its safe
 default is disabled.
 
+The independent hourly-notification sound preference uses `tg_hr_silent` in
+the same NVS namespace. It defaults to false (with sound), survives reboot,
+and can be changed without changing watering settings or enabling debug.
+
 ## WebSocket setup
 
 Copy `include/secrets.h.example` to `include/secrets.h` and configure:
@@ -125,6 +129,25 @@ report immediately. A one-shot debug report can also be requested from the
 website without changing that toggle. Failed messages remain in bounded
 in-memory retry queues; critical tank messages use a separate queue from debug
 traffic.
+
+Firmware 0.6.0 supports silent hourly reports through the website’s **Silent
+hourly updates** switch and Telegram’s `/settings` menu. The menu offers
+**Silent** and **With sound** buttons; `/hourly_silent on` and
+`/hourly_silent off` provide the same controls, while `/hourly_silent` or
+`/start` displays the menu. Only hourly reports receive `disable_notification`;
+tank alerts, pump-start messages, and on-demand reports retain sound. The
+notification job captures its sound mode when queued, including for retries.
+
+The Telegram worker polls `getUpdates` without long polling, processes only
+messages and callbacks from the configured numeric chat ID, and hands setting
+changes to the main loop through a queue. The main loop persists changes before
+confirming them and immediately publishes the setting through telemetry when
+connected. Forwarded messages and bot senders are ignored. The update cursor is
+saved separately so commands are not replayed after restarting. Telegram
+controls continue to work without the backend. Use a dedicated bot without a
+webhook or another `getUpdates` consumer; a group chat allows its members to
+control this notification preference. Commands are accepted without a bot
+username suffix.
 
 Every notification has a non-secret delivery record containing its kind,
 attempt, HTTP/API result, and Telegram message ID. The latest 16 records are
@@ -277,6 +300,25 @@ so opening Telegram's second TLS connection cannot collide with command parsing:
 }
 ```
 
+### Hourly notification sound
+
+The website uses an acknowledged command with a strict boolean value. The
+ESP32 saves it before acknowledging acceptance:
+
+```json
+{
+  "type": "telegram.hourlySilent.set",
+  "schemaVersion": 1,
+  "deviceId": "watering-system-01",
+  "requestId": "hourly-silent-1",
+  "enabled": true
+}
+```
+
+Both `device.hello` and `telemetry` include `telegramHourlySilent`. Old
+firmware reports are interpreted as false, and the web UI requires firmware
+0.6.0 before enabling this control.
+
 ### Manual watering
 
 Manual watering bypasses the moisture threshold but still requires a valid
@@ -304,6 +346,7 @@ Other supported commands are:
 - `config.get`.
 - `telegram.debug.set` with boolean `enabled`.
 - `telegram.debug.send` with a valid `expiresAtEpoch`.
+- `telegram.hourlySilent.set` with boolean `enabled`.
 
 The device remembers a bounded set of recent request IDs to avoid executing an
 immediate duplicate command. Expiration prevents an old watering command from
@@ -337,3 +380,11 @@ in Telegram delivery or watering control.
 
 The project uses PlatformIO with the Arduino ESP32 framework. ArduinoJson,
 WebSockets, Preferences, and Wi-Fi dependencies are resolved by PlatformIO.
+
+The notification sound and Telegram command policies can also be checked on a
+host without hardware:
+
+```sh
+c++ -std=c++11 -Wall -Wextra -Werror -Iinclude tests/telegram_settings_test.cpp -o /tmp/telegram-settings-test
+/tmp/telegram-settings-test
+```

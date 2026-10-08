@@ -2,6 +2,6 @@
 
 namespace watering {
 
-constexpr char FIRMWARE_VERSION[] = "0.5.1";
+constexpr char FIRMWARE_VERSION[] = "0.6.0";
 
 }  // namespace watering
