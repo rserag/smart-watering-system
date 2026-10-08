@@ -117,6 +117,21 @@ failure states back to the backend. Up to 16 latest unacknowledged results are
 kept in ESP32 flash and replayed after the backend reconnects, without exposing
 the bot token or chat ID.
 
+Firmware 0.6.0 adds **Silent hourly updates** under **System → Telegram**.
+The setting defaults to off and is saved on the ESP32 across restarts. It only
+changes sound for hourly reports; pump, tank, and on-demand reports retain
+their usual notification behavior. Recurring reports still require debug to
+be enabled.
+
+In the configured Telegram chat, send `/settings` (or `/start`) and choose
+**Silent** or **With sound**. `/hourly_silent on` and `/hourly_silent off` also
+set the preference; `/hourly_silent` shows its current value. Changes made in
+Telegram appear on the web UI when the device sends telemetry, and Telegram
+controls work while the backend is unavailable. Use a dedicated bot with a
+numeric destination chat ID: the ESP32 polls its updates, so the bot must not
+have a webhook or another update consumer. Only the configured chat can change
+this preference.
+
 ## Dashboard data
 
 The overview puts zones first, with controller diagnostics and Telegram under
@@ -145,6 +160,8 @@ Useful endpoints:
 - `GET /api/devices/{id}/events`
 - `GET /api/devices/{id}/telegram/deliveries`
 - `POST /api/devices/{id}/telegram/debug`
+- `PATCH /api/devices/{id}/telegram/hourly-silent` with boolean `enabled`; waits
+  for the ESP32 to confirm that the preference was saved.
 - `GET /api/devices/{id}/history.csv`
 
 ## Verification

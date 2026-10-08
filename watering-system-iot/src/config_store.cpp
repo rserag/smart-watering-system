@@ -10,6 +10,7 @@ constexpr uint32_t STORAGE_MAGIC = 0x57415452;  // "WATR"
 constexpr char STORAGE_NAMESPACE[] = "watering";
 constexpr char STORAGE_KEY[] = "config";
 constexpr char TELEGRAM_DEBUG_KEY[] = "tg_debug";
+constexpr char TELEGRAM_HOURLY_SILENT_KEY[] = "tg_hr_silent";
 
 struct StoredConfig {
   uint32_t magic;
@@ -96,6 +97,29 @@ bool ConfigStore::saveTelegramDebugEnabled(bool enabled) {
   }
   const size_t bytesWritten =
       preferences.putBool(TELEGRAM_DEBUG_KEY, enabled);
+  preferences.end();
+  return bytesWritten == sizeof(uint8_t);
+}
+
+bool ConfigStore::loadTelegramHourlySilent(bool &enabled) {
+  Preferences preferences;
+  if (!preferences.begin(STORAGE_NAMESPACE, true)) {
+    return false;
+  }
+  const bool present = preferences.isKey(TELEGRAM_HOURLY_SILENT_KEY);
+  if (present) {
+    enabled = preferences.getBool(TELEGRAM_HOURLY_SILENT_KEY, false);
+  }
+  preferences.end();
+  return present;
+}
+
+bool ConfigStore::saveTelegramHourlySilent(bool enabled) {
+  Preferences preferences;
+  if (!preferences.begin(STORAGE_NAMESPACE, false)) {
+    return false;
+  }
+  const size_t bytesWritten = preferences.putBool(TELEGRAM_HOURLY_SILENT_KEY, enabled);
   preferences.end();
   return bytesWritten == sizeof(uint8_t);
 }

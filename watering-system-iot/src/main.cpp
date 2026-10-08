@@ -20,7 +20,7 @@ watering::SystemConfig systemConfig;
 watering::ConfigStore configStore;
 watering::WateringController controller(RELAY_PINS, SENSOR_PINS,
                                         MAIN_TANK_LEVEL_PIN);
-watering::TelegramNotifier telegram(controller);
+watering::TelegramNotifier telegram(controller, configStore);
 watering::NetworkManager network(controller, configStore, systemConfig,
                                  telegram);
 watering::DisplayManager display(OLED_SDA_PIN, OLED_SCL_PIN,
@@ -53,7 +53,9 @@ void setup() {
 
   bool telegramDebugEnabled = false;
   configStore.loadTelegramDebugEnabled(telegramDebugEnabled);
-  telegram.begin(telegramDebugEnabled);
+  bool telegramHourlySilent = false;
+  configStore.loadTelegramHourlySilent(telegramHourlySilent);
+  telegram.begin(telegramDebugEnabled, telegramHourlySilent);
 
   display.begin();
   display.update(controller, false, false, millis(), true);

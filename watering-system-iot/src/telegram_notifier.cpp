@@ -48,6 +48,7 @@ constexpr time_t MIN_VALID_EPOCH = 1700000000;
 constexpr uint32_t AUDIT_MAGIC = 0x54474155;  // "TGAU"
 constexpr char AUDIT_NAMESPACE[] = "telegram";
 constexpr char AUDIT_KEY[] = "audit";
+constexpr char UPDATE_KEY[] = "update_id";
 
 struct StoredAudit {
   uint32_t magic;
@@ -58,21 +59,31 @@ struct StoredAudit {
 
 }  // namespace
 
-TelegramNotifier::TelegramNotifier(WateringController &controller)
-    : controller_(controller) {}
+TelegramNotifier::TelegramNotifier(WateringController &controller,
+                                   ConfigStore &configStore)
+    : controller_(controller), configStore_(configStore) {}
 
-void TelegramNotifier::begin(bool debugEnabled) {
+void TelegramNotifier::begin(bool debugEnabled, bool hourlySilent) {
   debugEnabled_ = debugEnabled;
+  hourlySilent_ = hourlySilent;
   nextDebugAt_ = 0;
   auditMutex_ = xSemaphoreCreateMutex();
   criticalQueue_ = xQueueCreate(CRITICAL_QUEUE_LENGTH, sizeof(NotificationJob));
   standardQueue_ = xQueueCreate(STANDARD_QUEUE_LENGTH, sizeof(NotificationJob));
+  settingsCommands_ = xQueueCreate(1, sizeof(SettingsCommand));
+  settingsReplies_ = xQueueCreate(1, sizeof(SettingsReply));
   if (auditMutex_ == nullptr || criticalQueue_ == nullptr ||
-      standardQueue_ == nullptr) {
+      standardQueue_ == nullptr || settingsCommands_ == nullptr ||
+      settingsReplies_ == nullptr) {
     Serial.println("Telegram notifier queue allocation failed");
     return;
   }
   loadAudit();
+  Preferences preferences;
+  if (preferences.begin(AUDIT_NAMESPACE, true)) {
+    nextUpdateId_ = preferences.getLong64(UPDATE_KEY, 0);
+    preferences.end();
+  }
   if (configured()) {
     workerRunning_ =
         xTaskCreate(workerEntry, "telegram", 8192, this, 1, &workerTask_) ==
@@ -84,6 +95,7 @@ void TelegramNotifier::begin(bool debugEnabled) {
 }
 
 void TelegramNotifier::loop(uint32_t now, bool wifiConnected) {
+  processSettingsCommands();
   if (configured() && wifiConnected && !timeSyncStarted_) {
     configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
     timeSyncStarted_ = true;
@@ -119,6 +131,39 @@ bool TelegramNotifier::requestDebugReport(const String &requestId,
 }
 
 bool TelegramNotifier::debugEnabled() const { return debugEnabled_; }
+
+bool TelegramNotifier::hourlySilent() const { return hourlySilent_; }
+
+bool TelegramNotifier::setHourlySilent(bool enabled) {
+  if (hourlySilent_ != enabled && !configStore_.saveTelegramHourlySilent(enabled)) {
+    return false;
+  }
+  hourlySilent_ = enabled;
+  settingsChanged_ = true;
+  return true;
+}
+
+bool TelegramNotifier::consumeSettingsChanged() {
+  const bool changed = settingsChanged_;
+  settingsChanged_ = false;
+  return changed;
+}
+
+void TelegramNotifier::processSettingsCommands() {
+  SettingsCommand command{};
+  if (settingsCommands_ == nullptr ||
+      xQueueReceive(settingsCommands_, &command, 0) != pdTRUE) {
+    return;
+  }
+  bool success = true;
+  if (command.action == TelegramSettingsAction::SilentOn ||
+      command.action == TelegramSettingsAction::SilentOff) {
+    success = setHourlySilent(command.action == TelegramSettingsAction::SilentOn);
+  }
+  const SettingsReply reply{command, success, hourlySilent_, debugEnabled_};
+  // Only one command is in flight; the worker drains this before polling again.
+  xQueueSend(settingsReplies_, &reply, 0);
+}
 
 bool TelegramNotifier::configured() const {
   return TELEGRAM_ENABLED && TELEGRAM_BOT_TOKEN[0] != '\0' &&
@@ -227,6 +272,9 @@ bool TelegramNotifier::enqueue(QueueHandle_t queue, const char *kind,
     strlcpy(job.requestId, requestId, sizeof(job.requestId));
   }
   strlcpy(job.text, text, sizeof(job.text));
+  // Capture the preference on the main task so retries retain the same mode.
+  // NotificationJob is private and never persisted, so its layout is safe to extend.
+  job.silent = silentTelegramNotification(kind, hourlySilent_);
   job.updateSequence = 1;
   job.nextAttemptAt = millis();
   if (xQueueSend(queue, &job, 0) == pdTRUE) {
@@ -238,7 +286,28 @@ bool TelegramNotifier::enqueue(QueueHandle_t queue, const char *kind,
   return false;
 }
 
-TelegramNotifier::SendResult TelegramNotifier::sendMessage(const char *text) {
+TelegramNotifier::SendResult TelegramNotifier::sendMessage(
+    const char *text, bool silent, bool settingsButtons) {
+  JsonDocument request;
+  request["chat_id"] = TELEGRAM_CHAT_ID;
+  request["text"] = text;
+  request["disable_notification"] = silent;
+  if (settingsButtons) {
+    JsonArray row = request["reply_markup"]["inline_keyboard"].to<JsonArray>()
+                        .add<JsonArray>();
+    JsonObject on = row.add<JsonObject>();
+    on["text"] = "Silent";
+    on["callback_data"] = "hourly_silent:on";
+    JsonObject off = row.add<JsonObject>();
+    off["text"] = "With sound";
+    off["callback_data"] = "hourly_silent:off";
+  }
+  JsonDocument response;
+  return callTelegram("sendMessage", request, response);
+}
+
+TelegramNotifier::SendResult TelegramNotifier::callTelegram(
+    const char *method, JsonDocument &request, JsonDocument &response) {
   SendResult result{};
   WiFiClientSecure client;
   client.setCACert(TELEGRAM_ROOT_CA);
@@ -246,11 +315,8 @@ TelegramNotifier::SendResult TelegramNotifier::sendMessage(const char *text) {
 
   String url = "https://api.telegram.org/bot";
   url += TELEGRAM_BOT_TOKEN;
-  url += "/sendMessage";
-
-  JsonDocument request;
-  request["chat_id"] = TELEGRAM_CHAT_ID;
-  request["text"] = text;
+  url += '/';
+  url += method;
   String body;
   serializeJson(request, body);
 
@@ -271,7 +337,6 @@ TelegramNotifier::SendResult TelegramNotifier::sendMessage(const char *text) {
     return result;
   }
 
-  JsonDocument response;
   const DeserializationError error = deserializeJson(response, http.getString());
   if (error) {
     strlcpy(result.errorStage, "response", sizeof(result.errorStage));
@@ -284,6 +349,87 @@ TelegramNotifier::SendResult TelegramNotifier::sendMessage(const char *text) {
   }
   http.end();
   return result;
+}
+
+void TelegramNotifier::rememberUpdate(int64_t updateId) {
+  nextUpdateId_ = updateId + 1;
+  Preferences preferences;
+  if (preferences.begin(AUDIT_NAMESPACE, false)) {
+    preferences.putLong64(UPDATE_KEY, nextUpdateId_);
+    preferences.end();
+  }
+}
+
+void TelegramNotifier::pollSettings() {
+  if (settingsPending_ || !telegramReady() || !due(millis(), nextPollAt_)) {
+    return;
+  }
+  nextPollAt_ = millis() + 5000;
+  JsonDocument request;
+  request["offset"] = nextUpdateId_;
+  request["limit"] = 1;
+  request["timeout"] = 0;
+  JsonArray allowed = request["allowed_updates"].to<JsonArray>();
+  allowed.add("message");
+  allowed.add("callback_query");
+  JsonDocument response;
+  if (!callTelegram("getUpdates", request, response).success) {
+    nextPollAt_ = millis() + 30000;
+    return;
+  }
+  JsonObjectConst update = response["result"][0];
+  if (update.isNull() || !update["update_id"].is<int64_t>()) {
+    return;
+  }
+  const int64_t updateId = update["update_id"].as<int64_t>();
+  JsonObjectConst callback = update["callback_query"];
+  const bool isCallback = !callback.isNull();
+  JsonObjectConst message = isCallback ? callback["message"].as<JsonObjectConst>()
+                                       : update["message"].as<JsonObjectConst>();
+  // The configured destination is also the control allowlist. Never reply to
+  // or act on messages from other chats, forwarded messages, or other bots.
+  const String chatId = message["chat"]["id"].as<String>();
+  if (!authorizedTelegramSettings(
+          chatId.c_str(), TELEGRAM_CHAT_ID, !message["forward_origin"].isNull(),
+          (isCallback ? callback["from"]["is_bot"] : message["from"]["is_bot"]).as<bool>())) {
+    rememberUpdate(updateId);
+    return;
+  }
+  String text = isCallback ? String(callback["data"] | "")
+                           : String(message["text"] | "");
+  text.trim();
+  SettingsCommand command{};
+  command.updateId = updateId;
+  command.action = telegramSettingsAction(text.c_str(), isCallback);
+  if (command.action == TelegramSettingsAction::Ignore) {
+    rememberUpdate(updateId);
+    return;
+  }
+  strlcpy(command.callbackId, callback["id"] | "", sizeof(command.callbackId));
+  if (xQueueSend(settingsCommands_, &command, 0) == pdTRUE) {
+    settingsPending_ = true;
+  }
+}
+
+void TelegramNotifier::sendSettingsReply(const SettingsReply &reply) {
+  // Save the cursor only after the main task has applied the command. Explicit
+  // on/off actions are idempotent if power fails between saving these records.
+  rememberUpdate(reply.command.updateId);
+  if (reply.command.callbackId[0] != '\0') {
+    JsonDocument request;
+    request["callback_query_id"] = reply.command.callbackId;
+    request["text"] = reply.success ? "Setting saved" : "Could not save setting";
+    JsonDocument response;
+    callTelegram("answerCallbackQuery", request, response);
+  }
+  char text[320];
+  snprintf(text, sizeof(text),
+           "%sController: %s\nHourly status updates: %s\nHourly notifications: %s\n"
+           "Choose the sound setting below, or use /hourly_silent on or off.",
+           reply.success ? "" : "Could not save setting. Please try again.\n",
+           DEVICE_ID, reply.debugEnabled ? "enabled" : "disabled",
+           reply.silent ? "silent" : "with sound");
+  sendMessage(text, true, true);
 }
 
 bool TelegramNotifier::telegramReady() const {
@@ -473,11 +619,21 @@ void TelegramNotifier::workerEntry(void *argument) {
 
 void TelegramNotifier::workerLoop() {
   for (;;) {
+    SettingsReply reply{};
+    if (xQueueReceive(settingsReplies_, &reply, 0) == pdTRUE) {
+      if (telegramReady()) {
+        sendSettingsReply(reply);
+        settingsPending_ = false;
+      } else {
+        xQueueSend(settingsReplies_, &reply, 0);
+      }
+    }
     NotificationJob job{};
     QueueHandle_t source = criticalQueue_;
     if (xQueueReceive(criticalQueue_, &job, 0) != pdTRUE) {
       source = standardQueue_;
       if (xQueueReceive(standardQueue_, &job, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        pollSettings();
         continue;
       }
     }
@@ -486,6 +642,7 @@ void TelegramNotifier::workerLoop() {
     if (!due(now, job.nextAttemptAt) || !telegramReady()) {
       xQueueSend(source, &job, 0);
       vTaskDelay(pdMS_TO_TICKS(500));
+      pollSettings();
       continue;
     }
 
@@ -494,13 +651,14 @@ void TelegramNotifier::workerLoop() {
       ++job.attempts;
     }
     upsertAudit(makeReport(job, "sending"));
-    const SendResult result = sendMessage(job.text);
+    const SendResult result = sendMessage(job.text, job.silent);
     lastSendSucceeded_ = result.success;
     if (result.success) {
       lastFailureStage_[0] = '\0';
       ++job.updateSequence;
       upsertAudit(makeReport(job, "sent", &result));
       Serial.println("Telegram notification sent");
+      pollSettings();
       continue;
     }
 
@@ -515,6 +673,7 @@ void TelegramNotifier::workerLoop() {
       upsertAudit(makeReport(job, "retry_scheduled", &result));
       Serial.println("Telegram notification failed; retry scheduled");
     }
+    pollSettings();
   }
 }
 

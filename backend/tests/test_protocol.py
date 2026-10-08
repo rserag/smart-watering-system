@@ -16,6 +16,7 @@ def test_firmware_hello_shape() -> None:
             "automaticWateringEnabled": True,
             "directTelegram": True,
             "telegramDebugEnabled": True,
+            "telegramHourlySilent": True,
             "telegramConfigured": True,
             "uptimeMs": 1200,
         }
@@ -24,6 +25,7 @@ def test_firmware_hello_shape() -> None:
     assert hello.automatic_watering_enabled is True
     assert hello.direct_telegram is True
     assert hello.telegram_debug_enabled is True
+    assert hello.telegram_hourly_silent is True
 
 
 def test_telemetry_rejects_invalid_rssi() -> None:
@@ -73,6 +75,7 @@ def test_telemetry_accepts_main_tank_low_state() -> None:
             "mainTankLow": True,
             "directTelegram": True,
             "telegramDebugEnabled": True,
+            "telegramHourlySilent": True,
             "telegramConfigured": True,
             "telegramPendingMessages": 2,
             "telegramLastSendSucceeded": False,
@@ -93,6 +96,14 @@ def test_telemetry_accepts_main_tank_low_state() -> None:
     )
     assert telemetry.main_tank_low is True
     assert telemetry.telegram_pending_messages == 2
+    assert telemetry.telegram_hourly_silent is True
+
+
+def test_hourly_silent_command_accepts_only_boolean_values() -> None:
+    assert CommandRequest.model_validate({"command": "telegram.hourlySilent.set", "parameters": {"enabled": False}}).parameters == {"enabled": False}
+    for enabled in (None, 1, "true"):
+        with pytest.raises(ValidationError):
+            CommandRequest.model_validate({"command": "telegram.hourlySilent.set", "parameters": {"enabled": enabled}})
 
 
 def test_telegram_debug_command_is_supported() -> None:

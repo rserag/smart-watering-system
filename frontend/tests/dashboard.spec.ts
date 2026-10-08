@@ -3,10 +3,11 @@ import type { Device, TelegramDelivery } from '../app/garden-shared';
 
 const now = new Date('2026-09-08T08:00:00Z');
 const device: Device = {
-  id:'test-garden', online:true, firmwareVersion:'0.5.1', bootId:'test-boot', schemaVersion:1,
+  id:'test-garden', online:true, firmwareVersion:'0.6.0', bootId:'test-boot', schemaVersion:1,
   configRevision:2, automaticWateringEnabled:true, lastSeenAt:now.toISOString(), wifiRssi:-60,
   mainTankLow:false, mainTankLastChangedAt:now.toISOString(), directTelegram:true,
   telegramDebugEnabled:true, telegramConfigured:true, telegramPendingMessages:0,
+  telegramHourlySilent:false,
   telegramLastSendSucceeded:true, telegramWorkerRunning:true, telegramTimeReady:true,
   telegramLastFailureStage:null,
   zones:[{id:1, name:'Tomatoes', raw:2000, filteredRaw:2000, moisturePercent:37,
@@ -22,6 +23,8 @@ const delivery: TelegramDelivery = {
 async function garden(page: Page) {
   const state = {
     authenticated:true,
+    device:{...device},
+    hourlyWrites:[] as {enabled:boolean}[], hourlyError:'', hourlyGate:Promise.resolve(),
     sockets:[] as WebSocketRoute[], deliveries:[delivery], deliveryFetches:0,
     historyFetches:0, historyFailure:false, historyGate:Promise.resolve(),
     pulse:{zoneId:1,revision:2,pulseOnMs:8000,soakMs:90000,maxPulseOnMs:45000},
@@ -33,7 +36,17 @@ async function garden(page: Page) {
     const url = new URL(route.request().url());
     const path = url.pathname;
     if (path === '/api/me') return route.fulfill({json:{authenticated:state.authenticated,authMode:'development',name:'Test gardener'}});
-    if (path === '/api/devices') return route.fulfill({json:[device]});
+    if (path === '/api/devices') return route.fulfill({json:[state.device]});
+    if (path.endsWith('/telegram/hourly-silent')) {
+      expect(route.request().method()).toBe('PATCH');
+      const body = route.request().postDataJSON();
+      state.hourlyWrites.push(body);
+      await state.hourlyGate;
+      if (state.hourlyError) return route.fulfill({status:409,json:{detail:state.hourlyError}});
+      state.device={...state.device,telegramHourlySilent:body.enabled};
+      state.sockets.at(-1)!.send(JSON.stringify({type:'telemetry',device:state.device}));
+      return route.fulfill({json:{enabled:body.enabled}});
+    }
     if (path.endsWith('/zones/1/pulse')) {
       if (route.request().method() === 'GET' && state.pulseReadError) return route.fulfill({status:503,json:{detail:state.pulseReadError}});
       if (route.request().method() === 'PATCH') {
@@ -72,10 +85,72 @@ async function garden(page: Page) {
   });
   await page.routeWebSocket('**/ws/dashboard', socket => {
     state.sockets.push(socket);
-    socket.send(JSON.stringify({type:'snapshot',devices:[device]}));
+    socket.send(JSON.stringify({type:'snapshot',devices:[state.device]}));
   });
   return state;
 }
+
+test('silent hourly setting saves both modes and waits for device confirmation', async ({page}) => {
+  const state = await garden(page);
+  let release!: () => void;
+  state.hourlyGate = new Promise<void>(resolve => {release=resolve;});
+  await page.goto('/?view=system');
+  const toggle = page.getByRole('switch',{name:'Silent hourly updates'});
+  await expect(toggle).toHaveAttribute('aria-checked','false');
+  await toggle.click();
+  await expect(toggle).toBeDisabled();
+  await expect(toggle).toHaveAttribute('aria-checked','false');
+  expect(state.hourlyWrites).toEqual([{enabled:true}]);
+  release();
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toHaveAttribute('aria-checked','true');
+  await expect(page.getByText('Hourly notification setting saved on the controller.')).toBeVisible();
+  await expect(page.getByRole('switch',{name:'Telegram debug messages'})).toHaveAttribute('aria-checked','true');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked','false');
+  expect(state.hourlyWrites).toEqual([{enabled:true},{enabled:false}]);
+});
+
+test('failed silent setting save retains reported state and allows retry', async ({page}) => {
+  const state = await garden(page);
+  state.hourlyError='Could not persist setting';
+  await page.goto('/?view=system');
+  const toggle=page.getByRole('switch',{name:'Silent hourly updates'});
+  await toggle.click();
+  await expect(page.getByRole('alert')).toHaveText('Could not persist setting');
+  await expect(toggle).toHaveAttribute('aria-checked','false');
+  await expect(toggle).toBeEnabled();
+  state.hourlyError='';
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-checked','true');
+  await expect(page.getByRole('alert')).toBeHidden();
+});
+
+test('Telegram setting changes appear live and survive page reload', async ({page}) => {
+  const state = await garden(page);
+  await page.goto('/?view=system');
+  const toggle=page.getByRole('switch',{name:'Silent hourly updates'});
+  await expect(toggle).toHaveAttribute('aria-checked','false');
+  state.device={...state.device,telegramHourlySilent:true};
+  state.sockets[0].send(JSON.stringify({type:'telemetry',device:state.device}));
+  await expect(toggle).toHaveAttribute('aria-checked','true');
+  expect(state.hourlyWrites).toEqual([]);
+  await page.reload();
+  await expect(toggle).toHaveAttribute('aria-checked','true');
+});
+
+test('silent hourly control is disabled for older firmware and offline devices', async ({page}) => {
+  const state = await garden(page);
+  state.device={...state.device,firmwareVersion:'0.5.1'};
+  await page.goto('/?view=system');
+  const toggle=page.getByRole('switch',{name:'Silent hourly updates'});
+  await expect(toggle).toBeDisabled();
+  await expect(page.getByText('Update the controller to firmware 0.6.0 to use this setting.')).toBeVisible();
+  state.device={...state.device,firmwareVersion:'0.6.0',online:false};
+  state.sockets[0].send(JSON.stringify({type:'device.status',device:state.device}));
+  await expect(toggle).toBeDisabled();
+  expect(state.hourlyWrites).toEqual([]);
+});
 
 test('logout returns to sign-in and stays signed out after reload', async ({page}) => {
   const state = await garden(page);

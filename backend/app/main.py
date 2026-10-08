@@ -36,6 +36,7 @@ from app.models import (
     ZoneSettings,
 )
 from app.zone_settings import ZoneNameRequest, legacy_zone_names_query, save_zone_name_query
+from app.telegram_settings import HourlySilentRequest, configure_hourly_silent, supports_hourly_silent
 from app.protocol import (
     CommandAck,
     CommandRequest,
@@ -118,6 +119,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
     telegram_status: dict[str, Any] = {
         "directTelegram": False,
         "telegramDebugEnabled": False,
+        "telegramHourlySilent": False,
         "telegramConfigured": False,
         "telegramPendingMessages": 0,
         "telegramLastSendSucceeded": False,
@@ -130,6 +132,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
         telegram_status = {
             "directTelegram": bool(latest.payload.get("directTelegram", False)),
             "telegramDebugEnabled": bool(latest.payload.get("telegramDebugEnabled", False)),
+            "telegramHourlySilent": bool(latest.payload.get("telegramHourlySilent", False)),
             "telegramConfigured": bool(latest.payload.get("telegramConfigured", False)),
             "telegramPendingMessages": int(latest.payload.get("telegramPendingMessages", 0)),
             "telegramLastSendSucceeded": bool(latest.payload.get("telegramLastSendSucceeded", False)),
@@ -442,9 +445,12 @@ async def create_command(
     _: Annotated[UserSession, Depends(require_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    if await session.get(Device, device_id) is None:
+    device = await session.get(Device, device_id)
+    if device is None:
         raise HTTPException(status_code=404, detail="Unknown device")
     command = Command(id=str(uuid4()), device_id=device_id, command=request.command, parameters=request.parameters, status="queued")
+    if request.command == "telegram.hourlySilent.set" and not supports_hourly_silent(device.firmware_version):
+        raise HTTPException(409, "Firmware 0.6.0 or newer is required for silent hourly updates")
     session.add(command)
     await session.commit()
     if await device_hub.send(device_id, command_wire_message(command)):
@@ -452,6 +458,21 @@ async def create_command(
         command.sent_at = utcnow()
         await session.commit()
     return {"commandId": command.id, "status": command.status}
+
+
+@app.patch("/api/devices/{device_id}/telegram/hourly-silent")
+async def set_telegram_hourly_silent(
+    device_id: str,
+    request: HourlySilentRequest,
+    _: Annotated[UserSession, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    device = await session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(404, "Unknown device")
+    if not supports_hourly_silent(device.firmware_version):
+        raise HTTPException(409, "Firmware 0.6.0 or newer is required for silent hourly updates")
+    return await configure_hourly_silent(device_id, request.enabled)
 
 
 @app.post("/api/devices/{device_id}/telegram/debug", status_code=202)
@@ -784,6 +805,7 @@ async def device_websocket(websocket: WebSocket) -> None:
                 elif message_type == "command.ack":
                     ack = CommandAck.model_validate(raw)
                     if ack.device_id == device_id:
+                        device_hub.resolve_reply(websocket, raw)
                         await record_command_ack(device_id, ack)
                 elif message_type == "telegram.delivery":
                     delivery_message = TelegramDeliveryMessage.model_validate(raw)
