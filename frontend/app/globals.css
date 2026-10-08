@@ -21,7 +21,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .garden-nav button { display:flex; align-items:center; gap:12px; background:transparent; border:0; border-radius:9px; padding:12px; text-align:left; color:#c8d8cc; font-size:.9375rem; }
 .garden-nav button[aria-current='page'],.garden-nav button:hover { background:var(--forest-soft); color:#fff; }
 .garden-nav-mark { width:18px; text-align:center; font-size:1.25rem; line-height:1; }
-.garden-profile { margin-top:auto; padding:20px 6px 0; display:flex; align-items:center; gap:9px; border-top:1px solid #43604b; font-size:.8125rem; min-width:0; }
+.garden-account { margin-top:auto; }
+.garden-profile { padding:20px 6px 0; display:flex; align-items:center; gap:9px; border-top:1px solid #43604b; font-size:.8125rem; min-width:0; }
+.garden-logout { display:block; width:100%; margin-top:12px; padding:10px 12px; min-height:44px; border:1px solid #43604b; border-radius:9px; background:transparent; color:#f1f6ed; text-align:left; font-size:.875rem; }
+.garden-logout:hover { background:var(--forest-soft); }
 .garden-profile>span:last-child { min-width:0; }
 .garden-profile strong,.garden-profile small { display:block; overflow-wrap:anywhere; }
 .garden-profile small { margin-top:3px; color:#bbcfbe; font-size:.75rem; }
@@ -177,6 +180,8 @@ input[aria-invalid='true'] { border-color:var(--danger); }
  .garden-nav button { justify-content:center; gap:7px; padding:10px 5px; font-size:.875rem; }
  .garden-nav-mark { display:none; }
  .garden-profile { display:none; }
+ .garden-account { margin-top:10px; }
+ .garden-logout { width:auto; margin:0 0 0 auto; }
  .garden-content { padding:24px 18px 36px; }
  .garden-page-header { align-items:start; margin-bottom:20px; gap:12px; }
  .garden-header-status { max-width:48%; }

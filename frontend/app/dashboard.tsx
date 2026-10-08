@@ -27,6 +27,8 @@ function zoneStatus(zone: Zone) {
 
 export default function Dashboard() {
   const garden = useGarden();
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
   const [navigation, setNavigation] = useState<Navigation>({ view: 'live', zone: 1, device: '', period: '24h', metric: 'moisturePercent' });
   const detailsRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -44,6 +46,20 @@ export default function Dashboard() {
     if (next.device) url.searchParams.set('device', next.device);
     window.history.pushState(null, '', url);
     setNavigation(next);
+  };
+  const logout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    setLogoutError('');
+    try {
+      const response = await fetch('/auth/logout', { method: 'POST', credentials: 'include' });
+      if (!response.ok) throw new Error('Logout failed');
+      // Reload to discard private data and close live connections after the session is revoked.
+      window.location.replace('/');
+    } catch {
+      setLogoutError('Could not log out. Please try again.');
+      setLoggingOut(false);
+    }
   };
 
   if (!garden.me) return <main className="garden-auth"><div className="garden-auth-mark" /><h1>Garden Watering</h1>
@@ -64,12 +80,16 @@ export default function Dashboard() {
     <aside className="garden-sidebar">
       <a href="?view=live" className="garden-brand" onClick={event => { event.preventDefault(); navigate({view:'live'}); }}><span className="garden-brand-mark" /><span>Garden Watering</span></a>
       <nav className="garden-nav" aria-label="Main navigation">{([['live', 'Overview'], ['history', 'History'], ['system', 'System']] as const).map(([view, label]) => <button key={view} type="button" aria-current={navigation.view === view ? 'page' : undefined} onClick={() => navigate({view})}><span className="garden-nav-mark" aria-hidden="true">{view === 'live' ? '◫' : view === 'history' ? '↗' : '⌘'}</span>{label}</button>)}</nav>
-      <div className="garden-profile"><span className="garden-profile-avatar">{garden.me.name?.split(' ').map(part => part[0]).slice(0,2).join('') || 'U'}</span><span><strong>{garden.me.name}</strong><small>{garden.me.email}</small></span></div>
+      <div className="garden-account">
+        <div className="garden-profile"><span className="garden-profile-avatar">{garden.me.name?.split(' ').map(part => part[0]).slice(0,2).join('') || 'U'}</span><span><strong>{garden.me.name}</strong><small>{garden.me.email}</small></span></div>
+        <button type="button" className="garden-logout" onClick={() => void logout()} disabled={loggingOut}>{loggingOut ? 'Logging out…' : 'Log out'}</button>
+      </div>
     </aside>
     <main className="garden-content">
       <header className="garden-page-header"><div><p className="garden-eyebrow">{navigation.view === 'live' ? 'Garden overview' : navigation.view === 'history' ? 'Watering activity' : 'System'}</p><h1>{navigation.view === 'live' ? 'Your garden' : navigation.view === 'history' ? 'History' : 'Controller & notifications'}</h1></div>
         <div className="garden-header-status"><span className={`garden-live ${live ? '' : 'garden-offline'}`} role="status"><span />{connectionLabel}</span>{selected && <span className="garden-caption">Last report {formatTime(selected.lastSeenAt)}</span>}</div>
       </header>
+      {logoutError && <div className="garden-error" role="alert">{logoutError}</div>}
       {garden.error && <div className="garden-error" role="alert"><span>{garden.error}</span><button className="garden-button" onClick={() => void garden.reload()} disabled={garden.loading}>Retry</button></div>}
       {garden.devices.length > 1 && <label className="garden-device-picker">Controller<select value={selected?.id ?? ''} onChange={event => navigate({device:event.target.value, zone:1})}>{garden.devices.map(device => <option value={device.id} key={device.id}>{device.id}</option>)}</select></label>}
       {!selected ? <section className="garden-empty"><h2>{garden.loading ? 'Loading your garden…' : 'Waiting for the controller'}</h2><p>{garden.loading ? 'Fetching the latest readings.' : 'Your zones will appear when the controller sends its first readings.'}</p></section> : <>
