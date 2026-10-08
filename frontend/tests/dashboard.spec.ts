@@ -21,6 +21,7 @@ const delivery: TelegramDelivery = {
 
 async function garden(page: Page) {
   const state = {
+    authenticated:true,
     sockets:[] as WebSocketRoute[], deliveries:[delivery], deliveryFetches:0,
     historyFetches:0, historyFailure:false, historyGate:Promise.resolve(),
     pulse:{zoneId:1,revision:2,pulseOnMs:8000,soakMs:90000,maxPulseOnMs:45000},
@@ -31,7 +32,7 @@ async function garden(page: Page) {
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     const path = url.pathname;
-    if (path === '/api/me') return route.fulfill({json:{authenticated:true,authMode:'development',name:'Test gardener'}});
+    if (path === '/api/me') return route.fulfill({json:{authenticated:state.authenticated,authMode:'development',name:'Test gardener'}});
     if (path === '/api/devices') return route.fulfill({json:[device]});
     if (path.endsWith('/zones/1/pulse')) {
       if (route.request().method() === 'GET' && state.pulseReadError) return route.fulfill({status:503,json:{detail:state.pulseReadError}});
@@ -75,6 +76,48 @@ async function garden(page: Page) {
   });
   return state;
 }
+
+test('logout returns to sign-in and stays signed out after reload', async ({page}) => {
+  const state = await garden(page);
+  await page.route('**/auth/logout', route => {
+    expect(route.request().method()).toBe('POST');
+    state.authenticated = false;
+    return route.fulfill({status:204});
+  });
+  await page.goto('/?view=system');
+  await page.getByRole('button', {name:'Log out', exact:true}).click();
+  await expect(page.getByRole('link', {name:'Continue to local preview'})).toBeVisible();
+  await expect(page).toHaveURL('/');
+  await expect(page.getByRole('navigation')).toBeHidden();
+  await page.reload();
+  await expect(page.getByRole('link', {name:'Continue to local preview'})).toBeVisible();
+});
+
+test('logout disables duplicate requests and allows retry after failure', async ({page}) => {
+  const state = await garden(page);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => {release=resolve;});
+  let requests = 0;
+  await page.route('**/auth/logout', async route => {
+    requests++;
+    if (requests === 1) {
+      await gate;
+      return route.fulfill({status:503});
+    }
+    state.authenticated = false;
+    return route.fulfill({status:204});
+  });
+  await page.goto('/');
+  await page.getByRole('button', {name:'Log out', exact:true}).click();
+  await expect(page.getByRole('button', {name:'Logging out…'})).toBeDisabled();
+  expect(requests).toBe(1);
+  release();
+  await expect(page.getByRole('alert')).toHaveText('Could not log out. Please try again.');
+  await expect(page.getByRole('navigation')).toBeVisible();
+  await page.getByRole('button', {name:'Log out', exact:true}).click();
+  await expect(page.getByRole('link', {name:'Continue to local preview'})).toBeVisible();
+  expect(requests).toBe(2);
+});
 
 test('refresh keeps the selected timestamp, chart and keyboard focus', async ({page}) => {
   const state = await garden(page);
