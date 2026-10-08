@@ -197,6 +197,25 @@ zone thresholds in `device_configurations`. Dashboard thresholds are shown only
 when that saved revision matches the controller's current revision; unavailable
 settings are never replaced with invented defaults. No firmware update is needed.
 
+### Configure a watering pulse
+
+In **Overview**, select a zone and choose **Configure pulse** in its details.
+The editor reads that controller’s current pulse and soak duration. Enter a pulse
+in seconds (1–60, capped by the zone’s total watering limit), then choose
+**Save pulse**. Saving interrupts any watering on that controller and resets its
+watering checks; the existing soak interval and other settings are preserved.
+
+The authenticated `GET /api/devices/{device_id}/zones/{zone_id}/pulse` endpoint
+reads the live configuration. `PATCH` accepts `pulseOnMs` and `expectedRevision`.
+The backend reads a fresh, complete four-zone snapshot, checks the revision and
+zone limit, then sends `config.set` over the existing device WebSocket. Success
+requires an `applied` acknowledgement and a matching read-back. The firmware
+persists the setting across restarts; no firmware update or database migration
+is required. Offline changes are not queued. Conflicts or unconfirmed saves
+require reloading settings before retrying. Read-back requests and replies are
+correlated to their request ID and device connection using the backend’s existing
+single-process device hub.
+
 Run `pnpm build` and `pnpm test:e2e` in `frontend` after installing Chromium with
 `pnpm exec playwright install chromium`. The browser suite runs the production
 frontend against isolated HTTP/WebSocket fixtures on port 4173, on desktop and

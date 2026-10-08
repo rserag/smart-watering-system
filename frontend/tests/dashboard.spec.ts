@@ -23,6 +23,8 @@ async function garden(page: Page) {
   const state = {
     sockets:[] as WebSocketRoute[], deliveries:[delivery], deliveryFetches:0,
     historyFetches:0, historyFailure:false, historyGate:Promise.resolve(),
+    pulse:{zoneId:1,revision:2,pulseOnMs:8000,soakMs:90000,maxPulseOnMs:45000},
+    pulseWrites:[] as {pulseOnMs:number;expectedRevision:number}[], pulseError:'', pulseReadError:'', pulseGate:Promise.resolve(),
   };
   await page.clock.install({time:new Date(now.getTime()-1000)});
   await page.clock.pauseAt(now);
@@ -31,6 +33,17 @@ async function garden(page: Page) {
     const path = url.pathname;
     if (path === '/api/me') return route.fulfill({json:{authenticated:true,authMode:'development',name:'Test gardener'}});
     if (path === '/api/devices') return route.fulfill({json:[device]});
+    if (path.endsWith('/zones/1/pulse')) {
+      if (route.request().method() === 'GET' && state.pulseReadError) return route.fulfill({status:503,json:{detail:state.pulseReadError}});
+      if (route.request().method() === 'PATCH') {
+        const body = route.request().postDataJSON();
+        state.pulseWrites.push(body);
+        await state.pulseGate;
+        if (state.pulseError) return route.fulfill({status:409,json:{detail:state.pulseError}});
+        state.pulse = {...state.pulse,pulseOnMs:body.pulseOnMs,revision:state.pulse.revision+1};
+      }
+      return route.fulfill({json:state.pulse});
+    }
     if (path.endsWith('/telegram/deliveries')) {
       state.deliveryFetches++;
       return route.fulfill({json:state.deliveries});
@@ -158,4 +171,84 @@ test('shows actual thresholds and last report on every viewport', async ({page})
   await expect(page.getByText('30% reference')).toHaveCount(0);
   const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
   expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width);
+});
+
+test('pulse editor reads the device and confirms saving only after its response', async ({page}) => {
+  const state = await garden(page);
+  await page.goto('/');
+  await page.getByRole('button',{name:'Configure pulse'}).click();
+  const input = page.getByRole('spinbutton',{name:'Pulse duration (seconds)'});
+  await expect(input).toHaveValue('8');
+  await page.clock.runFor(20);
+  await expect(input).toBeFocused();
+  await expect(page.getByText('Saving stops any watering in progress on this controller and restarts its watering checks.')).toBeVisible();
+  await expect(page.getByRole('button',{name:'Save pulse',exact:true})).toBeDisabled();
+  await input.fill('46');
+  await expect(page.getByRole('button',{name:'Save pulse',exact:true})).toBeDisabled();
+  await input.fill('12.5');
+  let release!: () => void;
+  state.pulseGate = new Promise<void>(resolve => {release=resolve;});
+  await page.getByRole('button',{name:'Save pulse',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Confirming with controller…'})).toBeDisabled();
+  await expect(page.getByText(/Pulse saved on controller/)).toHaveCount(0);
+  release();
+  await expect(page.getByText('Pulse saved on controller: 12.5 seconds. This setting is kept after a restart.')).toBeVisible();
+  expect(state.pulseWrites).toEqual([{pulseOnMs:12500,expectedRevision:2}]);
+  await page.clock.runFor(20);
+  await expect(page.getByRole('button',{name:'Configure pulse'})).toBeFocused();
+  await page.getByRole('button',{name:'Configure pulse'}).click();
+  await expect(input).toHaveValue('12.5');
+  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
+  expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width);
+  await page.screenshot({path:`test-results/pulse-editor-${test.info().project.name}.png`,fullPage:true});
+});
+
+test('pulse rejection preserves draft and requires current settings before retry', async ({page}) => {
+  const state = await garden(page);
+  await page.goto('/');
+  await page.getByRole('button',{name:'Configure pulse'}).click();
+  const input = page.getByRole('spinbutton',{name:'Pulse duration (seconds)'});
+  await input.fill('10');
+  state.pulseError='Settings changed since you opened this editor. Reload settings before saving.';
+  await page.getByRole('button',{name:'Save pulse',exact:true}).click();
+  await expect(page.getByRole('alert')).toHaveText(state.pulseError);
+  await expect(input).toHaveValue('10');
+  await expect(page.getByRole('button',{name:'Save pulse',exact:true})).toBeDisabled();
+  await expect(page.getByText(/Pulse saved on controller/)).toHaveCount(0);
+  state.pulse={...state.pulse,revision:3,pulseOnMs:9000};
+  state.pulseError='';
+  await page.getByRole('button',{name:'Reload settings'}).click();
+  await expect(input).toHaveValue('9');
+  await input.fill('11');
+  await page.getByRole('button',{name:'Save pulse',exact:true}).click();
+  await expect(page.getByText(/Pulse saved on controller: 11 seconds/)).toBeVisible();
+  expect(state.pulseWrites.at(-1)).toEqual({pulseOnMs:11000,expectedRevision:3});
+});
+
+test('failed pulse reads offer retry without assuming a default', async ({page}) => {
+  const state = await garden(page);
+  state.pulseReadError='Controller is unavailable. Reconnect and reload settings.';
+  await page.goto('/');
+  await page.getByRole('button',{name:'Configure pulse'}).click();
+  await expect(page.getByRole('alert')).toHaveText(state.pulseReadError);
+  await expect(page.getByRole('spinbutton',{name:'Pulse duration (seconds)'})).toHaveCount(0);
+  state.pulseReadError='';
+  await page.getByRole('button',{name:'Reload settings'}).click();
+  await expect(page.getByRole('spinbutton',{name:'Pulse duration (seconds)'})).toHaveValue('8');
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  expect(state.pulseWrites).toEqual([]);
+});
+
+test('pulse editing is blocked when the controller disconnects and cancelling sends no change', async ({page}) => {
+  const state = await garden(page);
+  await page.goto('/');
+  await page.getByRole('button',{name:'Configure pulse'}).click();
+  const input = page.getByRole('spinbutton',{name:'Pulse duration (seconds)'});
+  await input.fill('10');
+  state.sockets[0].send(JSON.stringify({type:'device.status',device:{...device,online:false}}));
+  await expect(page.getByRole('button',{name:'Save pulse',exact:true})).toBeDisabled();
+  await expect(page.getByText('Connect to the controller to change its pulse.')).toBeVisible();
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Configure pulse'})).toBeDisabled();
+  expect(state.pulseWrites).toEqual([]);
 });

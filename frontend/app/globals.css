@@ -81,6 +81,12 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible { 
 .garden-name-fields { display:flex; gap:9px; flex-wrap:wrap; }
 .garden-name-fields input { width:200px; min-width:0; flex:1 1 200px; }
 .garden-name-editor .garden-caption { margin-top:9px; }
+.garden-pulse-settings { border-top:1px solid var(--line); margin-top:24px; padding-top:22px; }
+.garden-pulse-settings h3 { font-size:1rem; margin:0 0 6px; }
+.garden-pulse-settings .garden-caption { margin-bottom:0; }
+.garden-pulse-editor { border-top:0; padding-top:0; }
+.garden-pulse-impact { font-size:.875rem; color:var(--muted); line-height:1.5; margin:12px 0; }
+.garden-pulse-actions { margin-top:12px; }
 input:not([type='range']),select { border:1px solid #c8d3c4; border-radius:8px; background:var(--panel); color:var(--ink); padding:10px 12px; min-height:44px; font-size:1rem; max-width:100%; }
 input[aria-invalid='true'] { border-color:var(--danger); }
 .garden-field-error { color:var(--danger); margin-top:10px; font-size:.875rem; }

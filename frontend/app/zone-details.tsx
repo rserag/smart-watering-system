@@ -2,9 +2,10 @@
 
 import { useRef, useState } from 'react';
 import { type Zone, fetchJson, formatTime, zoneName } from './garden-shared';
+import PulseSettings from './pulse-settings';
 
-export default function ZoneDetails({ deviceId, zone, onSaved, onHistory }: {
-  deviceId: string; zone: Zone;
+export default function ZoneDetails({ deviceId, zone, online, onSaved, onHistory }: {
+  deviceId: string; zone: Zone; online: boolean;
   onSaved: (deviceId: string, zoneId: number, name: string | null) => void;
   onHistory: () => void;
 }) {
@@ -58,5 +59,6 @@ export default function ZoneDetails({ deviceId, zone, onSaved, onHistory }: {
       <div><dt>Last watered</dt><dd>{zone.lastWateredAt ? formatTime(zone.lastWateredAt) : 'No recorded watering'}</dd></div>
       <div><dt>Fault</dt><dd>{zone.fault ?? 'None'}</dd></div>
     </dl>
+    <PulseSettings deviceId={deviceId} zoneId={zone.id} online={online} />
   </section>;
 }

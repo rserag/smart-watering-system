@@ -21,6 +21,7 @@ from app.database import SessionLocal, engine, get_session
 from app.device_configuration import ConfigurationSnapshot, active_thresholds, save_configuration_query
 from app.history_export import history_csv
 from app.hubs import dashboard_hub, device_hub
+from app.pulse_settings import ConfigurationAck, PulseRequest, configure_pulse
 from app.models import (
     Base,
     Command,
@@ -230,6 +231,31 @@ async def update_zone_name(
     zone = {"id": zone_id, "name": name}
     await dashboard_hub.broadcast({"type": "zone.updated", "deviceId": device_id, "zone": zone})
     return zone
+
+
+@app.get("/api/devices/{device_id}/zones/{zone_id}/pulse")
+async def get_zone_pulse(
+    device_id: str,
+    zone_id: Annotated[int, Path(ge=1, le=4)],
+    _: Annotated[UserSession, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    if await session.get(Device, device_id) is None:
+        raise HTTPException(404, "Unknown device")
+    return await configure_pulse(device_id, zone_id)
+
+
+@app.patch("/api/devices/{device_id}/zones/{zone_id}/pulse")
+async def update_zone_pulse(
+    device_id: str,
+    zone_id: Annotated[int, Path(ge=1, le=4)],
+    request: PulseRequest,
+    _: Annotated[UserSession, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    if await session.get(Device, device_id) is None:
+        raise HTTPException(404, "Unknown device")
+    return await configure_pulse(device_id, zone_id, request)
 
 
 def telegram_delivery_dict(delivery: TelegramDelivery) -> dict[str, Any]:
@@ -783,12 +809,18 @@ async def device_websocket(websocket: WebSocket) -> None:
                     if configuration.deviceId != device_id:
                         await websocket.close(code=4003, reason="Device ID changed")
                         return
+                    device_hub.resolve_reply(websocket, raw)
                     async with SessionLocal() as session:
                         await session.execute(save_configuration_query(configuration))
                         await session.commit()
                         device = await session.get(Device, device_id)
                         await dashboard_hub.broadcast({"type": "device.status", "device": await latest_snapshot(session, device)})
                 elif message_type == "config.ack":
+                    ack = ConfigurationAck.model_validate(raw)
+                    if ack.deviceId != device_id:
+                        await websocket.close(code=4003, reason="Device ID changed")
+                        return
+                    device_hub.resolve_reply(websocket, raw)
                     logger.info("device configuration message device_id=%s type=%s", device_id, message_type)
                 else:
                     logger.warning("unsupported device message device_id=%s type=%s", device_id, message_type)
