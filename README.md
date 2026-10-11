@@ -91,7 +91,7 @@ state; this hardware has no relay-contact or water-flow feedback.
 Every signed-in user may inspect diagnostics, action records, and captures.
 Only `sahakyan.raphayel@gmail.com` may issue control commands, including the
 existing watering/configuration/recovery controls. Firmware 0.8.0 or newer is required
-for detailed readings and tests; use 0.8.2 for the Telegram stack fix and
+for detailed readings and tests; use 0.8.3 for the Telegram stack fix and
 transport diagnostics. Older firmware remains visible with the
 available telemetry and documented wiring.
 

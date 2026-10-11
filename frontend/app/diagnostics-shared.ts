@@ -105,11 +105,15 @@ export function scenarioPreset(preset: string, zoneId: number, zone?: DebugZone)
 
 export async function diagnosticsFetch<T>(deviceId: string, suffix: string, body?: unknown, signal?: AbortSignal, keepalive = false): Promise<T> {
   const response = await fetch(`/api/devices/${encodeURIComponent(deviceId)}/${suffix}`, { credentials: 'include', method: body === undefined ? 'GET' : 'POST', ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }), signal, keepalive });
-  const data = await response.json() as { detail?: string | { message?: string; status?: string } };
+  if (response.status === 401) throw new Error('Your session has expired. Please sign in again.');
+  const unconfirmed = ' Execution is unconfirmed. Inspect current state and the command trace before sending another action.';
+  const fallback = body === undefined ? `Diagnostics connection unavailable (HTTP ${response.status}). Please try again.` : `Diagnostics request could not be confirmed (HTTP ${response.status}).${unconfirmed}`;
+  let data: { detail?: string | { message?: string; status?: string } } | null;
+  try { data = await response.json(); } catch { throw new Error(fallback); }
   if (!response.ok) {
-    const detail = data.detail;
-    const message = typeof detail === 'string' ? detail : detail?.message;
-    throw new Error(response.status === 401 ? 'Your session has expired. Please sign in again.' : `${message ?? `Request failed (${response.status}).`}${typeof detail !== 'string' && detail?.status === 'unconfirmed' ? ' Execution is unconfirmed. Inspect current state and the command trace before sending another action.' : ''}`);
+    const detail = data?.detail;
+    const message = typeof detail === 'string' ? detail : typeof detail?.message === 'string' ? detail.message : undefined;
+    throw new Error(message ? `${message}${typeof detail !== 'string' && detail?.status === 'unconfirmed' ? unconfirmed : ''}` : fallback);
   }
   return data as T;
 }

@@ -2,6 +2,8 @@ import { test, expect, type Page, type WebSocketRoute } from '@playwright/test';
 import type { Device } from '../app/garden-shared';
 import { DIAGNOSTICS_OPERATOR, type DebugAction, type DebugCapture, type DebugSnapshot } from '../app/diagnostics-shared';
 
+const htmlFailure = '<!doctype html><html><head><title>Gateway proxy failure</title></head><body>edge-debug-secret-fixture-token</body></html>';
+
 function fixtureSnapshot(): DebugSnapshot {
   return {
     type: 'debug.snapshot', schemaVersion: 1, deviceId: 'diagnostic-garden', bootId: 'diagnostic-boot', sequence: 1, uptimeMs: 121000, configRevision: 3,
@@ -19,7 +21,7 @@ async function garden(page: Page, options: { operator?: boolean; supported?: boo
   const state = {
     snapshot, device, receivedAt: new Date().toISOString(), operator: options.operator !== false, supported: options.supported !== false,
     writes: [] as { path: string; body: Record<string, unknown> }[], actions: [] as DebugAction[], captures: [] as DebugCapture[], sockets: [] as WebSocketRoute[],
-    nextRequest: 0, failure: '', renewUnconfirmed: false, cached: false, offline: false, leaseEnds: 0, pulse: null as { requestId: string; zoneId: number; ends: number } | null,
+    nextRequest: 0, failure: '', renewUnconfirmed: false, renewHtml: false, readFailure: null as { status: number; body: string } | null, cached: false, offline: false, leaseEnds: 0, pulse: null as { requestId: string; zoneId: number; ends: number } | null,
     getGate: Promise.resolve(), inFlight: 0, maxInFlight: 0, reads: 0,
   };
   const record = (command: string, status: string, requestId: string, parameters: Record<string, unknown> = {}, result?: Record<string, unknown>) => {
@@ -48,7 +50,11 @@ async function garden(page: Page, options: { operator?: boolean; supported?: boo
     if (path === '/api/devices') return route.fulfill({ json: [state.device] });
     if (path.endsWith('/diagnostics')) {
       state.reads++; state.inFlight++; state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
-      try { await state.getGate; touch(); return await route.fulfill({ json: { canControl: state.operator, supported: state.supported, online: !state.offline, snapshot: state.snapshot, receivedAt: state.receivedAt, actions: state.actions, captures: state.captures.map(({ id, name, createdAt, sampleCount }) => ({ id, name, createdAt, sampleCount })) } }); } finally { state.inFlight--; }
+      try {
+        await state.getGate;
+        if (state.readFailure) return await route.fulfill({ ...state.readFailure, contentType: 'text/html' });
+        touch(); return await route.fulfill({ json: { canControl: state.operator, supported: state.supported, online: !state.offline, snapshot: state.snapshot, receivedAt: state.receivedAt, actions: state.actions, captures: state.captures.map(({ id, name, createdAt, sampleCount }) => ({ id, name, createdAt, sampleCount })) } });
+      } finally { state.inFlight--; }
     }
     if (path.includes('/debug/captures/') && route.request().method() === 'GET') return route.fulfill({ json: state.captures.find(capture => capture.id === path.split('/').at(-1)) });
     if (path.endsWith('/debug/captures')) {
@@ -69,6 +75,7 @@ async function garden(page: Page, options: { operator?: boolean; supported?: boo
         // its follow-up snapshot and returned an unconfirmed HTTP outcome.
         state.leaseEnds = Date.now() + 30000;
         record(command, 'completed', requestId); touch();
+        if (state.renewHtml) return route.fulfill({ status: 504, contentType: 'text/html', body: htmlFailure });
         return route.fulfill({ status: 504, json: { detail: { status: 'unconfirmed', requestId, message: 'Session renewal read-back could not be confirmed.' } } });
       }
       if (state.failure) { record(command, 'rejected', requestId); return route.fulfill({ status: 409, json: { detail: state.failure } }); }
@@ -259,16 +266,25 @@ test('presets cover default startup and confirmations and clamp ADC noise at cal
   }
 });
 
-test('unconfirmed renewal remains visible after successful polls and Stop until a new confirmed session', async ({ page }) => {
+for (const responseFormat of ['JSON', 'HTML'] as const) {
+test(`${responseFormat} unconfirmed renewal remains visible after successful polls and Stop until a new confirmed session`, async ({ page }) => {
   const state = await garden(page);
   await page.getByRole('button', { name: 'Start simulation', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeEnabled();
   state.renewUnconfirmed = true;
+  state.renewHtml = responseFormat === 'HTML';
   const warning = page.getByRole('alert', { name: 'Test session renewal failed' });
   await expect(warning).toContainText('Lease renewal is unconfirmed', { timeout: 8000 });
   const readsAtFailure = state.reads;
   await expect.poll(() => state.reads).toBeGreaterThanOrEqual(readsAtFailure + 3);
   await expect(warning).toContainText('new test actions are disabled');
+  if (responseFormat === 'HTML') {
+    await expect(warning).toContainText('HTTP 504');
+    await expect(warning).toContainText('Execution is unconfirmed. Inspect current state and the command trace');
+    await expect(page.locator('body')).not.toContainText('edge-debug-secret-fixture-token');
+    await expect(page.locator('body')).not.toContainText('Gateway proxy failure');
+    await expect(warning).not.toContainText(/<!doctype|Unexpected token|SyntaxError/);
+  }
   await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Sample now', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Stop all tests', exact: true })).toBeEnabled();
@@ -288,4 +304,18 @@ test('unconfirmed renewal remains visible after successful polls and Stop until 
   await page.getByRole('button', { name: 'Start simulation', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeEnabled();
   await expect(warning).toHaveCount(0);
+});
+}
+
+test('HTML diagnostic read failures show a safe connection status and preserve the sign-in message', async ({ page }) => {
+  const state = await garden(page);
+  state.readFailure = { status: 503, body: htmlFailure };
+  await expect(page.getByRole('alert')).toContainText('Diagnostics connection unavailable (HTTP 503). Please try again.');
+  await expect(page.getByRole('alert')).not.toContainText('Execution is unconfirmed');
+  await expect(page.locator('body')).not.toContainText('edge-debug-secret-fixture-token');
+  await expect(page.locator('body')).not.toContainText('Gateway proxy failure');
+  state.readFailure = { status: 401, body: htmlFailure };
+  await expect(page.getByRole('alert')).toContainText('Your session has expired. Please sign in again.');
+  await expect(page.getByRole('alert')).not.toContainText(/HTTP 503|<!doctype|Unexpected token|SyntaxError/);
+  expect(state.writes).toEqual([]);
 });

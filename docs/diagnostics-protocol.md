@@ -9,7 +9,7 @@ fixtures; development mode does not bypass authorization.
 
 `device.hello` and normal `telemetry` gain `diagnosticsVersion: 1` and a `debug`
 object (the session state below). Existing firmware may omit these fields.
-Diagnostics is supported from firmware 0.8.0; the commissioned release is 0.8.2.
+Diagnostics is supported from firmware 0.8.0; the current release is 0.8.3.
 Normal telemetry during simulation must not
 store injected zone values as ordinary history or generate ordinary watering
 events. Diagnostic hardware watering is labelled diagnostic rather than automatic.
