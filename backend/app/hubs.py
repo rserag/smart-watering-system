@@ -1,8 +1,17 @@
 import asyncio
+from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
 from fastapi import WebSocket, WebSocketDisconnect
+
+
+@dataclass
+class ObservationRefresh:
+    connection: WebSocket
+    next_attempt: float = 0
+    task: asyncio.Task[tuple[str, dict[str, Any]]] | None = None
 
 
 class DeviceHub:
@@ -10,6 +19,8 @@ class DeviceHub:
         self._connections: dict[str, WebSocket] = {}
         self._lock = asyncio.Lock()
         self._pending: dict[str, tuple[WebSocket, str, asyncio.Future]] = {}
+        # Observation slots live only as long as their online connection.
+        self._observations: dict[str, ObservationRefresh] = {}
 
     def _disconnect_requests(self, websocket: WebSocket) -> None:
         for connection, _, future in self._pending.values():
@@ -32,6 +43,10 @@ class DeviceHub:
             websocket = self._connections.get(device_id)
         if websocket is None:
             raise ConnectionError("Controller is offline")
+        return await self._request(websocket, device_id, message, reply_type, timeout)
+
+    async def _request(self, websocket: WebSocket, device_id: str, message: dict[str, Any],
+                       reply_type: str, timeout: float) -> dict[str, Any]:
         # Audited actions provide their stored command ID. Other requests still
         # receive an ID here, so every reply is bound to one pending operation.
         request_id = message.get("requestId") or str(uuid4())
@@ -54,10 +69,59 @@ class DeviceHub:
             elif not future.cancelled():
                 future.exception()  # Retrieve disconnect errors even when sending also failed.
 
+    async def request_observation(self, device_id: str, message: dict[str, Any], reply_type: str,
+                                  timeout: float = 1) -> tuple[str, dict[str, Any]] | None:
+        """Share one read and limit attempts to every five seconds per connection.
+
+        A read timeout only removes its backend waiter; it cannot remove bytes
+        already sent to the controller. Keep the cooldown even after failure so
+        polling and additional viewers cannot accumulate reads on a slow link.
+        Mutating requests and their confirmation reads use request() directly.
+        """
+        async with self._lock:
+            websocket = self._connections.get(device_id)
+            if websocket is None:
+                raise ConnectionError("Controller is offline")
+            refresh = self._observations.get(device_id)
+            if refresh is None:
+                refresh = ObservationRefresh(websocket)
+                self._observations[device_id] = refresh
+            task = refresh.task
+            if task is None or task.done():
+                now = monotonic()
+                if now < refresh.next_attempt:
+                    return None
+                refresh.next_attempt = now + 5
+                request_id = message.get("requestId") or str(uuid4())
+                task = asyncio.create_task(self._observe(
+                    websocket, device_id, {**message, "requestId": request_id}, reply_type, timeout))
+                refresh.task = task
+                task.add_done_callback(lambda finished: self._finish_observation(refresh, finished))
+        # An HTTP client leaving must not cancel a read shared by other viewers
+        # or permit a second read while the first one remains on the wire.
+        return await asyncio.shield(task)
+
+    async def _observe(self, websocket: WebSocket, device_id: str, message: dict[str, Any],
+                       reply_type: str, timeout: float) -> tuple[str, dict[str, Any]]:
+        async with self._lock:
+            if self._connections.get(device_id) is not websocket:
+                raise ConnectionError("Controller connection changed")
+        reply = await self._request(websocket, device_id, message, reply_type, timeout)
+        return message["requestId"], reply
+
+    @staticmethod
+    def _finish_observation(refresh: ObservationRefresh, task: asyncio.Task) -> None:
+        if refresh.task is task:
+            refresh.task = None
+        if not task.cancelled():
+            task.exception()  # Consume failures even if every HTTP client left.
+
     async def register(self, device_id: str, websocket: WebSocket) -> None:
         async with self._lock:
             previous = self._connections.get(device_id)
             self._connections[device_id] = websocket
+            if previous is not websocket:
+                self._observations.pop(device_id, None)
         if previous is not None and previous is not websocket:
             self._disconnect_requests(previous)
             await previous.close(code=4002, reason="Replaced by a newer connection")
@@ -67,6 +131,7 @@ class DeviceHub:
         async with self._lock:
             if self._connections.get(device_id) is websocket:
                 self._connections.pop(device_id, None)
+                self._observations.pop(device_id, None)
 
     async def send(self, device_id: str, message: dict[str, Any]) -> bool:
         async with self._lock:

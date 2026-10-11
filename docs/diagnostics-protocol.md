@@ -9,7 +9,7 @@ fixtures; development mode does not bypass authorization.
 
 `device.hello` and normal `telemetry` gain `diagnosticsVersion: 1` and a `debug`
 object (the session state below). Existing firmware may omit these fields.
-Diagnostics is supported from firmware 0.8.0; the current release is 0.8.3.
+Diagnostics is supported from firmware 0.8.0; the current release is 0.8.4.
 Normal telemetry during simulation must not
 store injected zone values as ordinary history or generate ordinary watering
 events. Diagnostic hardware watering is labelled diagnostic rather than automatic.
@@ -96,6 +96,11 @@ zoneId optional, message optional, result optional (e.g. I2C addresses).
 Send started and terminal events for timed pulses/OLED tests. Bind the requestId
 to actual execution; command ACK alone is not completion. Snapshot reports
 reconcile state when action delivery is uncertain.
+
+Observation refreshes share one in-flight request per connected device and a
+five-second cooldown. Cached snapshots retain their actual receivedAt timestamp
+so slower observations remain visibly stale. Command confirmations bypass this
+observation cooldown and keep their correlated readback deadline.
 
 ## HTTP API and browser data
 

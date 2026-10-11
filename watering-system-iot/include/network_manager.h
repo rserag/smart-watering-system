@@ -34,17 +34,33 @@ class NetworkManager {
 
   class TransportClient final : public WebSocketsClient {
    public:
-    bool lastSslError(int &error) const {
+    struct HeartbeatState {
+      uint32_t intervalMs;
+      uint32_t pongDeadlineMs;
+      uint32_t lastPingMarkerAt;
+      uint8_t misses;
+      uint8_t missLimit;
+      bool pongReceived;
+    };
+    HeartbeatState heartbeatState() const {
+      // These scalar fields survive clientDisconnect() and require no access
+      // to the TCP/TLS objects deleted before its event callback.
+      return {_client.pingInterval, _client.pongTimeout, _client.lastPing,
+              _client.pongTimeoutCount, _client.disconnectTimeoutCount,
+              _client.pongReceived};
+    }
+    bool cachedSslResult(int &result) const {
 #if defined(ESP32) && defined(HAS_SSL)
       if (_client.isSSL && _client.ssl != nullptr) {
-        // The core API also formats a message; a one-byte scratch retains only
-        // its numeric code. Never retain a TLS pointer across a callback.
+        // Core 2.0.17 caches start_ssl_client()'s return, including a positive
+        // socket descriptor on success. This is not the latest I/O error.
+        // A one-byte scratch avoids retaining any formatted message.
         char ignored[1]{};
-        error = _client.ssl->lastError(ignored, sizeof(ignored));
+        result = _client.ssl->lastError(ignored, sizeof(ignored));
         return true;
       }
 #endif
-      error = 0;
+      result = 0;
       return false;
     }
     void abortTcpConnection() {
@@ -65,6 +81,8 @@ class NetworkManager {
   bool webSocketStarted_ = false;
   bool webSocketConnected_ = false;
   bool webSocketAbortPending_ = false;
+  bool webSocketPongSeen_ = false;
+  uint32_t lastWebSocketPongAt_ = 0;
   bool diagnosticsWifiSleepCaptured_ = false;
   bool diagnosticsWifiSleepApplied_ = false;
   wifi_ps_type_t previousDiagnosticsWifiSleep_ = WIFI_PS_MIN_MODEM;

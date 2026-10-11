@@ -175,8 +175,17 @@ distinguish close codes from JSON decoding failures without recording payloads.
 
 Firmware 0.8.3 keeps the Wi-Fi modem awake during Diagnostics to reduce
 receive latency, restoring the exact previous power-save mode after testing.
-Slow transport logs include signal strength and the available cached TLS error.
+Slow transport logs include signal strength and the available cached TLS result.
+The Arduino core can cache a successful socket descriptor as a positive result;
+this field alone does not identify a TLS failure.
 This does not extend output deadlines or session leases.
+
+Firmware 0.8.4 allows ten seconds for each heartbeat pong, retaining two missed
+pongs before disconnect. Successful TLS sends on a slow link can exceed the old
+three-second pong deadline and delay receiving a queued pong. Heartbeat logs
+record timing and miss counts without payloads. Independent local output cutoff
+timers and the thirty-second session lease still enforce safety while network
+processing is delayed.
 
 Low-tank and tank-restored messages are always enabled when Telegram credentials
 are configured. The persisted Telegram debug toggle additionally sends every
