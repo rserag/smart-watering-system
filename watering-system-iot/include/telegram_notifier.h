@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <cstddef>
 #include "config_store.h"
 #include "telegram_settings.h"
 #include "telegram_recovery.h"
@@ -57,6 +58,7 @@ class TelegramNotifier {
   static constexpr uint8_t CRITICAL_QUEUE_LENGTH = 8;
   static constexpr uint8_t STANDARD_QUEUE_LENGTH = 12;
   static constexpr uint8_t AUDIT_LENGTH = 16;
+  static constexpr uint32_t WORKER_STACK_BYTES = 8192;
   static constexpr uint32_t RECOVERY_CONFIRMATION_MS = 60000;
   static constexpr uint8_t RECOVERY_CONFIRMATION_COUNT = 8;
 
@@ -115,6 +117,20 @@ class TelegramNotifier {
     bool removeButtons;
   };
 
+  // Preserve the existing NVS blob layout, but use the report array itself as
+  // the persistence buffer. Copying this ~4 KB blob onto a task stack leaves
+  // too little room for the nested NVS/flash calls.
+  struct StoredAudit {
+    uint32_t magic;
+    uint16_t recordSize;
+    uint8_t count;
+    TelegramDeliveryReport reports[AUDIT_LENGTH];
+  };
+  static_assert(offsetof(StoredAudit, reports) == 8,
+                "persisted Telegram audit header must remain compatible");
+  static_assert(sizeof(StoredAudit) == 8 + sizeof(TelegramDeliveryReport) * AUDIT_LENGTH,
+                "persisted Telegram audit size must remain compatible");
+
   // Owned exclusively by the main task. Consuming before a controller mutation
   // makes duplicate callbacks harmless even if Telegram redelivers an update.
   using RecoveryConfirmation = TelegramRecoveryConfirmation;
@@ -147,9 +163,15 @@ class TelegramNotifier {
   String bootId_;
   volatile bool lastSendSucceeded_ = false;
   char lastFailureStage_[24]{};
-  TelegramDeliveryReport audit_[AUDIT_LENGTH]{};
+  StoredAudit auditStorage_{};
   bool auditDirty_[AUDIT_LENGTH]{};
   uint8_t auditCount_ = 0;
+  // These queue receive buffers belong only to the worker. Keeping them in the
+  // notifier avoids retaining ~3 KB of locals while HTTPS or NVS calls run.
+  NotificationJob workerJob_{};
+  RecoveryReply workerRecoveryReply_{};
+  SettingsReply workerSettingsReply_{};
+  uint32_t workerMinimumStackFreeBytes_ = WORKER_STACK_BYTES;
 
   void enqueueTankState(bool isLow);
   void enqueuePumpStarted(const PumpStartEvent &event);
@@ -184,6 +206,7 @@ class TelegramNotifier {
   static uint32_t retryDelayMs(uint8_t attempts);
   static void workerEntry(void *argument);
   void workerLoop();
+  void recordWorkerStackWatermark();
 };
 
 }  // namespace watering

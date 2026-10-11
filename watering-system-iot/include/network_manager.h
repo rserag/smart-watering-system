@@ -28,17 +28,29 @@ class NetworkManager {
   static constexpr uint32_t WIFI_RETRY_MAX_MS = 60000;
   static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 15000;
   static constexpr uint32_t COMMAND_MAX_FUTURE_SECONDS = 300;
+  static constexpr size_t MAX_OUTGOING_JSON_BYTES = 8192;
+  static constexpr uint32_t SLOW_TRANSPORT_MS = 250;
+
+  class TransportClient final : public WebSocketsClient {
+   public:
+    void abortTcpConnection() {
+      // Public disconnect() sends another WebSocket frame. A short write may
+      // have left the peer inside the previous frame, so use TCP cleanup only.
+      WebSocketsClient::clientDisconnect(&_client, nullptr);
+    }
+  };
 
   WateringController &controller_;
   ConfigStore &configStore_;
   SystemConfig &config_;
   TelegramNotifier &telegram_;
   DisplayManager &display_;
-  WebSocketsClient webSocket_;
+  TransportClient webSocket_;
 
   bool wifiWasConnected_ = false;
   bool webSocketStarted_ = false;
   bool webSocketConnected_ = false;
+  bool webSocketAbortPending_ = false;
   bool webSocketConfigurationWarningPrinted_ = false;
   uint32_t lastWifiAttemptAt_ = 0;
   uint32_t wifiRetryMs_ = WIFI_RETRY_MIN_MS;
@@ -89,6 +101,7 @@ class NetworkManager {
   void sendCommandAck(const String &requestId, const char *command,
                       const char *status, const char *error = nullptr);
   bool sendJson(JsonDocument &document);
+  void abortFailedWebSocket();
 };
 
 }  // namespace watering

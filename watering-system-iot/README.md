@@ -158,6 +158,21 @@ HTTPS. Network work runs in a dedicated low-priority task, so DNS, TLS, and
 Telegram response delays cannot block sensor sampling, tank detection, or relay
 timing. Multiple NTP servers provide the valid clock required for TLS.
 
+Firmware 0.8.1 keeps Telegram audit and worker receive buffers outside the task
+stack, fixing an overflow during NVS delivery-audit persistence. The existing
+saved audit format is preserved. Its 8 KB worker retains stack protection and
+logs `Telegram worker minimum free stack: ... / 8192 bytes` with free/minimum
+heap and largest free block as the measured stack margin decreases, including
+after audit writes and HTTPS calls. CI checks the
+compiled frame bounds with `python tests/verify_telegram_stack.py`; runtime
+commissioning must also confirm a healthy watermark and no resets.
+
+Firmware 0.8.2 checks JSON allocation and serialization before transmission.
+A failed WebSocket send ends the test session and closes that TCP connection
+before another frame can be sent. Serial diagnostics report only allowlisted
+message types, byte counts, outcomes, elapsed time and free heap; backend logs
+distinguish close codes from JSON decoding failures without recording payloads.
+
 Low-tank and tank-restored messages are always enabled when Telegram credentials
 are configured. The persisted Telegram debug toggle additionally sends every
 pump start and one controller report per hour. Enabling debug sends the first

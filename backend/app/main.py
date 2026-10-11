@@ -859,7 +859,12 @@ async def device_websocket(websocket: WebSocket) -> None:
             hello = DeviceHello.model_validate(
                 await asyncio.wait_for(websocket.receive_json(), timeout=settings.hello_timeout_seconds)
             )
-        except (TimeoutError, ValidationError, ValueError):
+        except (TimeoutError, ValidationError):
+            await websocket.close(code=4000, reason="A valid device.hello message is required")
+            return
+        except ValueError as exc:
+            logger.warning("device JSON parsing error device_id=%s error_type=%s position=%s",
+                           device_id, type(exc).__name__, getattr(exc, "pos", None))
             await websocket.close(code=4000, reason="A valid device.hello message is required")
             return
         device_id = hello.device_id
@@ -961,8 +966,11 @@ async def device_websocket(websocket: WebSocket) -> None:
                     logger.warning("unsupported device message device_id=%s type=%s", device_id, message_type)
             except ValidationError as exc:
                 logger.warning("invalid device message device_id=%s errors=%s", device_id, exc.errors(include_url=False))
-    except (WebSocketDisconnect, ValueError):
-        pass
+    except WebSocketDisconnect as exc:
+        logger.info("device WebSocket closed device_id=%s close_code=%s", device_id, exc.code)
+    except ValueError as exc:
+        logger.warning("device JSON parsing error device_id=%s error_type=%s position=%s",
+                       device_id, type(exc).__name__, getattr(exc, "pos", None))
     finally:
         if device_id is not None:
             await device_hub.unregister(device_id, websocket)

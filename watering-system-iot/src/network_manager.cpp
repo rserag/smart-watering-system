@@ -12,6 +12,38 @@ namespace watering {
 
 namespace {
 
+// ArduinoJson's built-in String writer clears its destination with nullptr,
+// which frees reserve() on this ESP32 core. This adapter retains the exact
+// reservation and reports append failures instead of sending truncated JSON.
+class ReservedStringWriter {
+ public:
+  explicit ReservedStringWriter(String &destination) : destination_(destination) {}
+  size_t write(uint8_t value) {
+    return destination_.concat(static_cast<char>(value)) ? 1 : 0;
+  }
+  size_t write(const uint8_t *data, size_t length) {
+    return destination_.concat(reinterpret_cast<const char *>(data), length) ? length : 0;
+  }
+ private:
+  String &destination_;
+};
+
+const char *safeMessageType(JsonDocument &document) {
+  const char *type = document["type"] | "";
+  static const char *const allowed[] = {"device.hello", "telemetry", "config.snapshot",
+      "config.ack", "command.ack", "telegram.delivery", "debug.snapshot", "debug.action"};
+  for (const char *known : allowed) if (strcmp(type, known) == 0) return known;
+  return "unknown";
+}
+
+const char *safeMessageStatus(JsonDocument &document) {
+  const char *status = document["status"] | "";
+  static const char *const allowed[] = {"accepted", "rejected", "duplicate", "started",
+                                      "completed", "cancelled"};
+  for (const char *known : allowed) if (strcmp(status, known) == 0) return known;
+  return "none";
+}
+
 bool hasZoneConfigFields(JsonObjectConst zone) {
   return zone["id"].is<uint8_t>() && zone["enabled"].is<bool>() &&
          zone["dryRaw"].is<int>() && zone["wetRaw"].is<int>() &&
@@ -67,13 +99,25 @@ void NetworkManager::begin() {
 }
 
 void NetworkManager::loop(uint32_t now) {
+  abortFailedWebSocket();
   handleWifi(now);
   handleWebSocketStartup();
   processPendingTelegramDebug();
 
   if (webSocketStarted_ && WiFi.status() == WL_CONNECTED &&
       (webSocketConnected_ || controller_.activeZone() < 0)) {
+    const uint32_t loopStarted = millis();
+    const bool wasConnected = webSocketConnected_;
     webSocket_.loop();
+    const uint32_t elapsed = millis() - loopStarted;
+    if (elapsed >= SLOW_TRANSPORT_MS) {
+      Serial.printf("WebSocket loop elapsed=%lu ms heap=%u connected=%u wasConnected=%u\n",
+                    static_cast<unsigned long>(elapsed), ESP.getFreeHeap(),
+                    webSocketConnected_, wasConnected);
+    }
+    // A receive callback may request an abort. Wait until all library callback
+    // frames have unwound before deleting its TCP/TLS objects.
+    abortFailedWebSocket();
   }
 
   now = millis();
@@ -96,6 +140,7 @@ void NetworkManager::loop(uint32_t now) {
     if (display_.consumeTestEvent(action)) sendDebugAction(action);
     sendTelegramDeliveryReport();
   }
+  abortFailedWebSocket();
 }
 
 bool NetworkManager::wifiConnected() const {
@@ -136,7 +181,8 @@ void NetworkManager::handleWifi(uint32_t now) {
       webSocket_.disconnect();
       webSocketStarted_ = false;
     }
-    Serial.println("Wi-Fi disconnected; local watering remains active");
+    Serial.printf("Wi-Fi disconnected; diagnostics inactive; automation %s\n",
+                  controller_.automationHeld() ? "hold preserved" : "not held");
     wifiRetryMs_ = WIFI_RETRY_MIN_MS;
     startWifiAttempt(now);
   }
@@ -200,14 +246,18 @@ void NetworkManager::handleWebSocketEvent(WStype_t type, uint8_t *payload,
       sendTelemetry(millis());
       sendDebugSnapshot(millis());
       break;
-    case WStype_DISCONNECTED:
+    case WStype_DISCONNECTED: {
+      const bool hadSession = controller_.debugSessionActive();
       controller_.endDebugSession(millis(), "backend disconnected");
       display_.cancelTest(millis(), "backend disconnected");
       if (webSocketConnected_) {
-        Serial.println("WebSocket disconnected; local watering remains active");
+        Serial.printf("WebSocket disconnected; diagnostics session %s; automation %s\n",
+                      hadSession ? "ended" : "inactive",
+                      controller_.automationHeld() ? "hold preserved" : "not held");
       }
       webSocketConnected_ = false;
       break;
+    }
     case WStype_TEXT:
       handleIncomingText(payload, length);
       break;
@@ -403,6 +453,9 @@ void NetworkManager::handleDebugCommand(JsonObjectConst root, const char *type) 
     sendCommandAck(requestId, type, "rejected", error);
     return;
   }
+  // Strict validation guarantees an allowlisted type. Never log identifiers,
+  // session ownership, payload values, or authentication material.
+  Serial.printf("Debug command type=%s\n", type);
   if (strcmp(type, "debug.snapshot.get") == 0) {
     sendDebugSnapshot(millis(), requestId);
     return;
@@ -959,10 +1012,60 @@ bool NetworkManager::sendJson(JsonDocument &document) {
     return false;
   }
 
+  const uint32_t started = millis();
+  const char *type = safeMessageType(document);
+  const char *status = safeMessageStatus(document);
+  size_t expected = 0;
+  size_t serialized = 0;
   String payload;
-  payload.reserve(2048);
-  serializeJson(document, payload);
-  return webSocket_.sendTXT(payload);
+  const auto report = [&](const char *result) {
+    Serial.printf("WebSocket send type=%s status=%s result=%s expected=%u "
+                  "serialized=%u buffered=%u elapsed=%lu ms heap=%u\n",
+                  type, status, result, static_cast<unsigned>(expected),
+                  static_cast<unsigned>(serialized), static_cast<unsigned>(payload.length()),
+                  static_cast<unsigned long>(millis() - started), ESP.getFreeHeap());
+  };
+  if (document.overflowed()) {
+    report("document_overflow");
+    return false;
+  }
+  expected = measureJson(document);
+  if (expected == 0 || expected > MAX_OUTGOING_JSON_BYTES) {
+    report("size_rejected");
+    return false;
+  }
+  if (!payload.reserve(expected)) {
+    report("reserve_failed");
+    return false;
+  }
+  ReservedStringWriter writer(payload);
+  serialized = serializeJson(document, writer);
+  if (serialized != expected || payload.length() != expected) {
+    report("serialization_incomplete");
+    return false;
+  }
+  const bool sent = webSocket_.sendTXT(payload);
+  if (!sent || millis() - started >= SLOW_TRANSPORT_MS ||
+      strcmp(type, "command.ack") == 0 || strcmp(type, "debug.action") == 0) {
+    report(sent ? "sent" : "transport_failed");
+  }
+  if (!sent) {
+    // sendFrame() returns false on a short header/payload write without always
+    // closing the TCP stream. Suppress all subsequent frames immediately.
+    webSocketConnected_ = false;
+    webSocketAbortPending_ = true;
+    controller_.endDebugSession(millis(), "WebSocket transmission failed");
+    display_.cancelTest(millis(), "WebSocket transmission failed");
+  }
+  return sent;
+}
+
+void NetworkManager::abortFailedWebSocket() {
+  if (!webSocketAbortPending_) return;
+  webSocketAbortPending_ = false;
+  Serial.printf("WebSocket aborting failed transport; automation %s\n",
+                controller_.automationHeld() ? "hold preserved" : "not held");
+  webSocket_.abortTcpConnection();
 }
 
 }  // namespace watering
