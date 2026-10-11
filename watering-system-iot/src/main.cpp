@@ -63,11 +63,12 @@ void setup() {
 }
 
 void loop() {
-  const uint32_t now = millis();
-  controller.loop(now);
-  network.loop(now);
-  telegram.loop(now, network.wifiConnected());
+  // Each service needs a timestamp after the preceding work: network callbacks
+  // can start or renew tests, and network/NVS operations can block this loop.
+  controller.loop(millis());
+  network.loop(millis());
+  telegram.loop(millis(), network.wifiConnected());
   display.update(controller, network.wifiConnected(),
-                 network.backendConnected(), now);
+                 network.backendConnected(), millis());
   delay(5);  // Yield to the Wi-Fi stack without blocking control timing.
 }

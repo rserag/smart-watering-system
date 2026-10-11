@@ -187,6 +187,13 @@ record timing and miss counts without payloads. Independent local output cutoff
 timers and the thirty-second session lease still enforce safety while network
 processing is delayed.
 
+Firmware 0.8.5 refreshes the main-loop timestamp before each service. OLED test
+durations begin after the framebuffer transfer, and the started event records
+that same time. A command handled during the network loop therefore cannot
+expire its new display test using an older loop timestamp. Display restoration
+runs in the main loop, so blocked network processing can delay completion;
+physical relay cutoff remains enforced by its independent timers.
+
 Low-tank and tank-restored messages are always enabled when Telegram credentials
 are configured. The persisted Telegram debug toggle additionally sends every
 pump start and one controller report per hour. Enabling debug sends the first

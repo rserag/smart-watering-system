@@ -15,7 +15,8 @@ class DisplayManager {
   void update(const WateringController &controller, bool wifiConnected,
               bool backendConnected, uint32_t now, bool force = false);
   bool startTest(const char *pattern, uint32_t durationMs, const char *requestId,
-                 const char *sessionId, uint32_t now, const char *&error);
+                 const char *sessionId, const char *&error);
+  uint32_t testStartedAt() const;
   void cancelTest(uint32_t now, const char *reason);
   bool consumeTestEvent(DebugActionEvent &event);
   bool available() const;

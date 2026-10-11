@@ -12,6 +12,15 @@ for suite in controller_recovery_test controller_diagnostics_test; do
     "$script_dir/../src/config_store.cpp" -o "$test_binary"
   "$test_binary"
 done
+"${CXX:-c++}" -std=c++17 -Wall -Wextra -Werror \
+  -I "$script_dir/display_stubs" -I "$script_dir/controller_stubs" \
+  -I "$script_dir/../include" \
+  "$script_dir/display_clock_test.cpp" \
+  "$script_dir/../src/display_manager.cpp" \
+  "$script_dir/../src/watering_controller.cpp" \
+  "$script_dir/../src/watering_types.cpp" \
+  "$script_dir/../src/config_store.cpp" -o "$test_binary"
+"$test_binary"
 json_include=${ARDUINOJSON_INCLUDE:-"$script_dir/../.pio/libdeps/esp32dev/ArduinoJson/src"}
 if [ ! -f "$json_include/ArduinoJson.h" ]; then
   printf '%s\n' 'ArduinoJson headers missing: build with PlatformIO before running protocol tests.' >&2

@@ -9,6 +9,7 @@ constexpr int HIGH = 1;
 constexpr int INPUT = 0;
 constexpr int OUTPUT = 1;
 constexpr int ADC_11db = 3;
+#define F(value) value
 using portMUX_TYPE = int;
 constexpr int portMUX_INITIALIZER_UNLOCKED = 0;
 inline void portENTER_CRITICAL(portMUX_TYPE *) {}
@@ -26,6 +27,7 @@ inline uint32_t micros() { return controller_test::now * 1000; }
 inline void pinMode(uint8_t, int) {}
 inline void analogSetPinAttenuation(uint8_t, int) {}
 inline void delayMicroseconds(unsigned) {}
+inline void delay(uint32_t duration) { controller_test::now += duration; }
 inline int digitalRead(uint8_t pin) { return controller_test::digital[pin]; }
 inline int analogRead(uint8_t pin) { return controller_test::analog[pin]; }
 inline void digitalWrite(uint8_t pin, int value) {
@@ -45,6 +47,7 @@ inline size_t strlcpy(char *destination, const char *source, size_t size) {
   return length;
 }
 struct TestSerial {
+  void begin(unsigned) {}
   template <typename... Args> void printf(const char *, Args...) {}
   void println(const char * = "") {}
 };
