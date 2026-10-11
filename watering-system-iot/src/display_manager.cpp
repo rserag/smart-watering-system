@@ -2,6 +2,8 @@
 
 #include <Wire.h>
 
+#include "firmware_info.h"
+
 namespace watering {
 
 DisplayManager::DisplayManager(uint8_t sdaPin, uint8_t sclPin, uint8_t address)
@@ -111,7 +113,7 @@ void DisplayManager::draw(const WateringController &controller,
 
 bool DisplayManager::startTest(const char *pattern, uint32_t durationMs,
                                const char *requestId, const char *sessionId,
-                               uint32_t now, const char *&error) {
+                               const char *&error) {
   if (!available_) { error = "OLED is unavailable"; return false; }
   if (testActive_ || testEventPending_) { error = "another OLED test is pending"; return false; }
   if (durationMs < 100 || durationMs > 10000 ||
@@ -121,7 +123,6 @@ bool DisplayManager::startTest(const char *pattern, uint32_t durationMs,
   strlcpy(testEvent_.sessionId, sessionId, sizeof(testEvent_.sessionId));
   strlcpy(testEvent_.requestId, requestId, sizeof(testEvent_.requestId));
   strlcpy(testEvent_.command, "debug.oled.test", sizeof(testEvent_.command));
-  testStartedAt_ = now;
   testDurationMs_ = durationMs;
   testActive_ = true;
   display_.clearDisplay();
@@ -133,14 +134,21 @@ bool DisplayManager::startTest(const char *pattern, uint32_t durationMs,
     display_.setTextColor(SSD1306_WHITE);
     display_.setTextSize(1);
     display_.setCursor(0, 0);
-    display_.print(F("DIAGNOSTICS 0.8.0\nOLED 128x64\nGPIO SDA21 SCL22\n0123456789 ABCDEF"));
+    display_.print(F("DIAGNOSTICS "));
+    display_.print(FIRMWARE_VERSION);
+    display_.print(F("\nOLED 128x64\nGPIO SDA21 SCL22\n0123456789 ABCDEF"));
     display_.drawRect(0, 0, WIDTH, HEIGHT, SSD1306_WHITE);
   }
   display_.display();
+  // Count the visible interval after the framebuffer transfer. Rendering or
+  // an ACK sent afterward must not replace the actual start timestamp.
+  testStartedAt_ = millis();
   hasFrame_ = false;
   error = nullptr;
   return true;
 }
+
+uint32_t DisplayManager::testStartedAt() const { return testStartedAt_; }
 
 void DisplayManager::finishTest(const char *status, uint32_t now, const char *reason) {
   if (!testActive_) return;

@@ -563,7 +563,7 @@ void NetworkManager::handleDebugCommand(JsonObjectConst root, const char *type) 
     success = true;
   } else if (strcmp(type, "debug.oled.test") == 0) {
     success = display_.startTest(root["pattern"].as<const char *>(), root["durationMs"].as<uint32_t>(),
-                                 requestId, sessionId, now, error);
+                                 requestId, sessionId, error);
   } else if (strcmp(type, "debug.i2c.scan") == 0) {
     addressCount = display_.scanI2c(addresses, sizeof(addresses));
     success = true;
@@ -579,7 +579,7 @@ void NetworkManager::handleDebugCommand(JsonObjectConst root, const char *type) 
     strlcpy(event.requestId, requestId, sizeof(event.requestId));
     strlcpy(event.command, type, sizeof(event.command));
     strlcpy(event.status, strcmp(type, "debug.oled.test") == 0 ? "started" : "completed", sizeof(event.status));
-    event.uptimeMs = millis();
+    event.uptimeMs = strcmp(type, "debug.oled.test") == 0 ? display_.testStartedAt() : millis();
     if (diagnosticsHasField(root, "zoneId")) event.zoneId = root["zoneId"].as<uint8_t>();
     sendDebugAction(event, strcmp(type, "debug.i2c.scan") == 0 ? addresses : nullptr, addressCount);
   }
