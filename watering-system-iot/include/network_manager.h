@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <WebSocketsClient.h>
+#include <WiFi.h>
 
 #include "config_store.h"
 #include "diagnostics_commands.h"
@@ -33,6 +34,19 @@ class NetworkManager {
 
   class TransportClient final : public WebSocketsClient {
    public:
+    bool lastSslError(int &error) const {
+#if defined(ESP32) && defined(HAS_SSL)
+      if (_client.isSSL && _client.ssl != nullptr) {
+        // The core API also formats a message; a one-byte scratch retains only
+        // its numeric code. Never retain a TLS pointer across a callback.
+        char ignored[1]{};
+        error = _client.ssl->lastError(ignored, sizeof(ignored));
+        return true;
+      }
+#endif
+      error = 0;
+      return false;
+    }
     void abortTcpConnection() {
       // Public disconnect() sends another WebSocket frame. A short write may
       // have left the peer inside the previous frame, so use TCP cleanup only.
@@ -51,6 +65,9 @@ class NetworkManager {
   bool webSocketStarted_ = false;
   bool webSocketConnected_ = false;
   bool webSocketAbortPending_ = false;
+  bool diagnosticsWifiSleepCaptured_ = false;
+  bool diagnosticsWifiSleepApplied_ = false;
+  wifi_ps_type_t previousDiagnosticsWifiSleep_ = WIFI_PS_MIN_MODEM;
   bool webSocketConfigurationWarningPrinted_ = false;
   uint32_t lastWifiAttemptAt_ = 0;
   uint32_t wifiRetryMs_ = WIFI_RETRY_MIN_MS;
@@ -102,6 +119,7 @@ class NetworkManager {
                       const char *status, const char *error = nullptr);
   bool sendJson(JsonDocument &document);
   void abortFailedWebSocket();
+  void updateDiagnosticsWifiSleep();
 };
 
 }  // namespace watering

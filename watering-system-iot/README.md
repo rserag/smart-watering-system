@@ -173,6 +173,11 @@ before another frame can be sent. Serial diagnostics report only allowlisted
 message types, byte counts, outcomes, elapsed time and free heap; backend logs
 distinguish close codes from JSON decoding failures without recording payloads.
 
+Firmware 0.8.3 keeps the Wi-Fi modem awake during Diagnostics to reduce
+receive latency, restoring the exact previous power-save mode after testing.
+Slow transport logs include signal strength and the available cached TLS error.
+This does not extend output deadlines or session leases.
+
 Low-tank and tank-restored messages are always enabled when Telegram credentials
 are configured. The persisted Telegram debug toggle additionally sends every
 pump start and one controller report per hour. Enabling debug sends the first

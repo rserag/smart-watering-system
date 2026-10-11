@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 #include <esp_system.h>
+#include <esp_wifi.h>
 #include <time.h>
 
 #include "firmware_info.h"
@@ -42,6 +43,18 @@ const char *safeMessageStatus(JsonDocument &document) {
                                       "completed", "cancelled"};
   for (const char *known : allowed) if (strcmp(status, known) == 0) return known;
   return "none";
+}
+
+bool applyWifiSleepState(wifi_ps_type_t desired) {
+  if (WiFi.getSleep() != desired) {
+    if (desired == WIFI_PS_NONE) WiFi.setSleep(false);
+    else WiFi.setSleep(desired);
+  }
+  // This core updates its cached sleep type before the driver call, including
+  // on failure. Verify the driver and retry directly if its state differs.
+  wifi_ps_type_t actual;
+  if (esp_wifi_get_ps(&actual) != ESP_OK) return false;
+  return actual == desired || esp_wifi_set_ps(desired) == ESP_OK;
 }
 
 bool hasZoneConfigFields(JsonObjectConst zone) {
@@ -101,6 +114,7 @@ void NetworkManager::begin() {
 void NetworkManager::loop(uint32_t now) {
   abortFailedWebSocket();
   handleWifi(now);
+  updateDiagnosticsWifiSleep();
   handleWebSocketStartup();
   processPendingTelegramDebug();
 
@@ -111,13 +125,17 @@ void NetworkManager::loop(uint32_t now) {
     webSocket_.loop();
     const uint32_t elapsed = millis() - loopStarted;
     if (elapsed >= SLOW_TRANSPORT_MS) {
-      Serial.printf("WebSocket loop elapsed=%lu ms heap=%u connected=%u wasConnected=%u\n",
+      int sslError = 0;
+      const bool sslErrorAvailable = webSocket_.lastSslError(sslError);
+      Serial.printf("WebSocket loop elapsed=%lu ms heap=%u connected=%u wasConnected=%u "
+                    "rssi=%d sslError=%d sslErrorAvailable=%u\n",
                     static_cast<unsigned long>(elapsed), ESP.getFreeHeap(),
-                    webSocketConnected_, wasConnected);
+                    webSocketConnected_, wasConnected, WiFi.RSSI(), sslError, sslErrorAvailable);
     }
     // A receive callback may request an abort. Wait until all library callback
     // frames have unwound before deleting its TCP/TLS objects.
     abortFailedWebSocket();
+    updateDiagnosticsWifiSleep();
   }
 
   now = millis();
@@ -141,6 +159,7 @@ void NetworkManager::loop(uint32_t now) {
     sendTelegramDeliveryReport();
   }
   abortFailedWebSocket();
+  updateDiagnosticsWifiSleep();
 }
 
 bool NetworkManager::wifiConnected() const {
@@ -174,6 +193,7 @@ void NetworkManager::handleWifi(uint32_t now) {
 
   if (!connected && wifiWasConnected_) {
     controller_.endDebugSession(now, "Wi-Fi disconnected");
+    updateDiagnosticsWifiSleep();
     display_.cancelTest(now, "Wi-Fi disconnected");
     wifiWasConnected_ = false;
     webSocketConnected_ = false;
@@ -249,6 +269,7 @@ void NetworkManager::handleWebSocketEvent(WStype_t type, uint8_t *payload,
     case WStype_DISCONNECTED: {
       const bool hadSession = controller_.debugSessionActive();
       controller_.endDebugSession(millis(), "backend disconnected");
+      updateDiagnosticsWifiSleep();
       display_.cancelTest(millis(), "backend disconnected");
       if (webSocketConnected_) {
         Serial.printf("WebSocket disconnected; diagnostics session %s; automation %s\n",
@@ -521,6 +542,9 @@ void NetworkManager::handleDebugCommand(JsonObjectConst root, const char *type) 
     addressCount = display_.scanI2c(addresses, sizeof(addresses));
     success = true;
   }
+  // Apply the active-session latency setting before acknowledging a new
+  // session; restore it before acknowledging termination/resume as well.
+  updateDiagnosticsWifiSleep();
   debugRequests_.remember(requestId, type, root["expiresAtEpoch"].as<uint32_t>(), epoch, success, error);
   sendCommandAck(requestId, type, success ? "accepted" : "rejected", error);
   if (success && strcmp(type, "debug.output.pulse") != 0) {
@@ -1019,11 +1043,15 @@ bool NetworkManager::sendJson(JsonDocument &document) {
   size_t serialized = 0;
   String payload;
   const auto report = [&](const char *result) {
+    int sslError = 0;
+    const bool sslErrorAvailable = webSocket_.lastSslError(sslError);
     Serial.printf("WebSocket send type=%s status=%s result=%s expected=%u "
-                  "serialized=%u buffered=%u elapsed=%lu ms heap=%u\n",
+                  "serialized=%u buffered=%u elapsed=%lu ms heap=%u "
+                  "rssi=%d sslError=%d sslErrorAvailable=%u\n",
                   type, status, result, static_cast<unsigned>(expected),
                   static_cast<unsigned>(serialized), static_cast<unsigned>(payload.length()),
-                  static_cast<unsigned long>(millis() - started), ESP.getFreeHeap());
+                  static_cast<unsigned long>(millis() - started), ESP.getFreeHeap(),
+                  WiFi.RSSI(), sslError, sslErrorAvailable);
   };
   if (document.overflowed()) {
     report("document_overflow");
@@ -1055,6 +1083,7 @@ bool NetworkManager::sendJson(JsonDocument &document) {
     webSocketConnected_ = false;
     webSocketAbortPending_ = true;
     controller_.endDebugSession(millis(), "WebSocket transmission failed");
+    updateDiagnosticsWifiSleep();
     display_.cancelTest(millis(), "WebSocket transmission failed");
   }
   return sent;
@@ -1066,6 +1095,33 @@ void NetworkManager::abortFailedWebSocket() {
   Serial.printf("WebSocket aborting failed transport; automation %s\n",
                 controller_.automationHeld() ? "hold preserved" : "not held");
   webSocket_.abortTcpConnection();
+}
+
+void NetworkManager::updateDiagnosticsWifiSleep() {
+  if (controller_.debugSessionActive()) {
+    if (!diagnosticsWifiSleepCaptured_) {
+      previousDiagnosticsWifiSleep_ = WiFi.getSleep();
+      diagnosticsWifiSleepCaptured_ = true;
+      diagnosticsWifiSleepApplied_ = applyWifiSleepState(WIFI_PS_NONE);
+      Serial.printf("Diagnostics Wi-Fi sleep disabled previous=%u applied=%u rssi=%d\n",
+                    static_cast<unsigned>(previousDiagnosticsWifiSleep_),
+                    diagnosticsWifiSleepApplied_, WiFi.RSSI());
+    } else if (!diagnosticsWifiSleepApplied_) {
+      diagnosticsWifiSleepApplied_ = applyWifiSleepState(WIFI_PS_NONE);
+      if (diagnosticsWifiSleepApplied_) Serial.println("Diagnostics Wi-Fi sleep disable retry applied");
+    }
+    return;
+  }
+  if (!diagnosticsWifiSleepCaptured_) return;
+  const bool restored = applyWifiSleepState(previousDiagnosticsWifiSleep_);
+  if (restored) {
+    diagnosticsWifiSleepCaptured_ = false;
+    diagnosticsWifiSleepApplied_ = false;
+    Serial.printf("Diagnostics Wi-Fi sleep restored mode=%u\n",
+                  static_cast<unsigned>(previousDiagnosticsWifiSleep_));
+  }
+  // If the Wi-Fi driver is momentarily unavailable, retain the saved value and
+  // retry restoration in the next network loop without repeatedly logging.
 }
 
 }  // namespace watering
