@@ -19,6 +19,10 @@ Wire commands use `type`, `requestId`, `schemaVersion`, `deviceId`,
 30 seconds), and `sessionId` where applicable. Replies use existing
 `command.ack` with accepted/rejected and a message. Duplicate command IDs must
 never replay actuation. Firmware must validate boot, deadline, mode, and lease.
+The backend fixes command expiry twenty seconds after creation, leaving ten
+seconds of headroom under the firmware maximum for small clock differences.
+It never extends an in-flight command deadline. This delivery window is separate
+from the ESP32's thirty-second local session lease.
 
 Commands:
 

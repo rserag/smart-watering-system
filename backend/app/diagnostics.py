@@ -27,6 +27,9 @@ from app.protocol import CommandAck
 
 OPERATOR_EMAIL = "sahakyan.raphayel@gmail.com"
 MAX_AGE = timedelta(seconds=10)
+# Firmware accepts deadlines at most 30 seconds ahead of its own UTC clock.
+# Leave headroom for clock skew; this deadline is separate from its local lease.
+WIRE_TTL_SECONDS = 20
 RING_SIZE = 600
 AUDIT_DAYS = 30
 CAPTURE_DAYS = 7
@@ -274,7 +277,8 @@ async def device_or_404(session: AsyncSession, device_id: str) -> Device:
 
 def wire(command: str, device_id: str, boot_id: str, request_id: str, parameters: dict) -> dict:
     return {**parameters, "type": command, "deviceId": device_id, "schemaVersion": 1,
-            "expectedBootId": boot_id, "requestId": request_id, "expiresAtEpoch": int(utcnow().timestamp()) + 30}
+            "expectedBootId": boot_id, "requestId": request_id,
+            "expiresAtEpoch": int(utcnow().timestamp()) + WIRE_TTL_SECONDS}
 
 
 async def read_snapshot(device: Device, timeout: float = 2) -> tuple[dict, datetime]:
