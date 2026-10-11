@@ -105,7 +105,10 @@ void NetworkManager::begin() {
       [this](WStype_t type, uint8_t *payload, size_t length) {
         handleWebSocketEvent(type, payload, length);
       });
-  webSocket_.enableHeartbeat(15000, 3000, 2);
+  // A successful TLS send can occupy the main loop for several seconds, and
+  // queued commands can precede PONG processing. Keep heartbeats enabled while
+  // allowing that bounded delay; local relay and session timers stay separate.
+  webSocket_.enableHeartbeat(15000, 10000, 2);
   webSocket_.setReconnectInterval(5000);
 
   startWifiAttempt(millis());
@@ -125,12 +128,13 @@ void NetworkManager::loop(uint32_t now) {
     webSocket_.loop();
     const uint32_t elapsed = millis() - loopStarted;
     if (elapsed >= SLOW_TRANSPORT_MS) {
-      int sslError = 0;
-      const bool sslErrorAvailable = webSocket_.lastSslError(sslError);
+      int cachedSslResult = 0;
+      const bool cachedSslResultAvailable = webSocket_.cachedSslResult(cachedSslResult);
       Serial.printf("WebSocket loop elapsed=%lu ms heap=%u connected=%u wasConnected=%u "
-                    "rssi=%d sslError=%d sslErrorAvailable=%u\n",
+                    "rssi=%d cachedSslResult=%d cachedSslResultAvailable=%u\n",
                     static_cast<unsigned long>(elapsed), ESP.getFreeHeap(),
-                    webSocketConnected_, wasConnected, WiFi.RSSI(), sslError, sslErrorAvailable);
+                    webSocketConnected_, wasConnected, WiFi.RSSI(), cachedSslResult,
+                    cachedSslResultAvailable);
     }
     // A receive callback may request an abort. Wait until all library callback
     // frames have unwound before deleting its TCP/TLS objects.
@@ -260,6 +264,8 @@ void NetworkManager::handleWebSocketEvent(WStype_t type, uint8_t *payload,
   switch (type) {
     case WStype_CONNECTED:
       webSocketConnected_ = true;
+      webSocketPongSeen_ = false;
+      lastWebSocketPongAt_ = 0;
       Serial.println("WebSocket connected");
       telegram_.replayDeliveryReports();
       sendHello();
@@ -267,20 +273,40 @@ void NetworkManager::handleWebSocketEvent(WStype_t type, uint8_t *payload,
       sendDebugSnapshot(millis());
       break;
     case WStype_DISCONNECTED: {
+      const uint32_t now = millis();
+      const auto heartbeat = webSocket_.heartbeatState();
       const bool hadSession = controller_.debugSessionActive();
-      controller_.endDebugSession(millis(), "backend disconnected");
+      controller_.endDebugSession(now, "backend disconnected");
       updateDiagnosticsWifiSleep();
-      display_.cancelTest(millis(), "backend disconnected");
+      display_.cancelTest(now, "backend disconnected");
       if (webSocketConnected_) {
         Serial.printf("WebSocket disconnected; diagnostics session %s; automation %s\n",
                       hadSession ? "ended" : "inactive",
                       controller_.automationHeld() ? "hold preserved" : "not held");
+        // The library backdates lastPing after a missed PONG to trigger retry;
+        // report it as a marker age, not elapsed time since a real sent PING.
+        Serial.printf("WebSocket disconnect heartbeat intervalMs=%lu pongDeadlineMs=%lu "
+                      "misses=%u missLimit=%u pongReceived=%u libraryPingMarkerAgeMs=%lu "
+                      "pongSeen=%u lastPongAgeMs=%lu uptimeMs=%lu\n",
+                      static_cast<unsigned long>(heartbeat.intervalMs),
+                      static_cast<unsigned long>(heartbeat.pongDeadlineMs),
+                      heartbeat.misses, heartbeat.missLimit, heartbeat.pongReceived,
+                      static_cast<unsigned long>(now - heartbeat.lastPingMarkerAt),
+                      webSocketPongSeen_,
+                      static_cast<unsigned long>(webSocketPongSeen_ ? now - lastWebSocketPongAt_ : 0),
+                      static_cast<unsigned long>(now));
       }
       webSocketConnected_ = false;
       break;
     }
     case WStype_TEXT:
       handleIncomingText(payload, length);
+      break;
+    case WStype_PONG:
+      lastWebSocketPongAt_ = millis();
+      webSocketPongSeen_ = true;
+      Serial.printf("WebSocket heartbeat pong received uptimeMs=%lu\n",
+                    static_cast<unsigned long>(lastWebSocketPongAt_));
       break;
     case WStype_ERROR:
       Serial.println("WebSocket transport error");
@@ -1043,15 +1069,15 @@ bool NetworkManager::sendJson(JsonDocument &document) {
   size_t serialized = 0;
   String payload;
   const auto report = [&](const char *result) {
-    int sslError = 0;
-    const bool sslErrorAvailable = webSocket_.lastSslError(sslError);
+    int cachedSslResult = 0;
+    const bool cachedSslResultAvailable = webSocket_.cachedSslResult(cachedSslResult);
     Serial.printf("WebSocket send type=%s status=%s result=%s expected=%u "
                   "serialized=%u buffered=%u elapsed=%lu ms heap=%u "
-                  "rssi=%d sslError=%d sslErrorAvailable=%u\n",
+                  "rssi=%d cachedSslResult=%d cachedSslResultAvailable=%u\n",
                   type, status, result, static_cast<unsigned>(expected),
                   static_cast<unsigned>(serialized), static_cast<unsigned>(payload.length()),
                   static_cast<unsigned long>(millis() - started), ESP.getFreeHeap(),
-                  WiFi.RSSI(), sslError, sslErrorAvailable);
+                  WiFi.RSSI(), cachedSslResult, cachedSslResultAvailable);
   };
   if (document.overflowed()) {
     report("document_overflow");

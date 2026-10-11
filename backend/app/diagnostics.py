@@ -281,6 +281,10 @@ async def read_snapshot(device: Device, timeout: float = 2) -> tuple[dict, datet
     request_id = str(uuid4())
     raw = await device_hub.request(device.id, wire("debug.snapshot.get", device.id, device.boot_id, request_id, {}),
                                    "debug.snapshot", timeout=timeout)
+    return accept_snapshot(device, request_id, raw)
+
+
+def accept_snapshot(device: Device, request_id: str, raw: dict) -> tuple[dict, datetime]:
     message = DebugSnapshot.model_validate(raw)
     if message.deviceId != device.id or message.bootId != device.boot_id or message.requestId != request_id:
         raise ValueError("Controller returned a snapshot for a different boot or request")
@@ -289,6 +293,14 @@ async def read_snapshot(device: Device, timeout: float = 2) -> tuple[dict, datet
     if cached is None or cached[0]["bootId"] != device.boot_id:
         raise ValueError("Current diagnostics are unavailable")
     return cached
+
+
+async def refresh_observation(device: Device) -> None:
+    result = await device_hub.request_observation(device.id,
+        wire("debug.snapshot.get", device.id, device.boot_id, str(uuid4()), {}), "debug.snapshot", timeout=1)
+    if result is not None:
+        request_id, raw = result
+        accept_snapshot(device, request_id, raw)
 
 
 async def current_control(session: AsyncSession, device_id: str, expected_boot: str,
@@ -468,7 +480,7 @@ async def diagnostics(device_id: str, user: Annotated[UserSession, Depends(requi
     cached = snapshot_cache.get(device_id)
     if supported and online and (cached is None or cached[0]["bootId"] != device.boot_id or utcnow() - cached[1] > timedelta(seconds=2)):
         try:
-            await read_snapshot(device, timeout=1)
+            await refresh_observation(device)
         except (ConnectionError, TimeoutError, ValidationError, ValueError):
             pass
         cached = snapshot_cache.get(device_id)
