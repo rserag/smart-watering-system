@@ -27,7 +27,7 @@ docker compose up --build -d
 
 Open `https://localhost:8443` on this laptop or `https://192.168.1.3:8443` from the LAN. The entire dashboard, API, and WebSocket connection share that secure address. Port 3000 redirects to it automatically.
 
-The browser needs to trust `backend/certs/ca.crt`, or you can visit the secure address once and accept its certificate warning for local review. This browser trust step is separate from the ESP32, which is configured to accept the certificate without validation.
+The browser needs to trust `backend/certs/ca.crt` for local review. The ESP32 separately verifies its backend certificate; for a local private CA, define `WEBSOCKET_CA_CERT` as the PEM certificate string in the excluded `include/secrets.h`.
 
 The local `.env` starts with `AUTH_MODE=development`, which provides a one-click local review session. Secrets and certificates are excluded from source control. Use `docker compose logs -f backend` for device/telemetry logs and `docker compose down` to stop the application without deleting historical data.
 
@@ -60,7 +60,7 @@ The current local `include/secrets.h` is configured for the production VM:
 wss://watering.sibex.zip/ws/device
 ```
 
-It uses the same bearer token as production's `DEVICE_SHARED_TOKEN`. The ESP32 currently accepts the server certificate without validation while retaining WSS encryption; this permits connectivity but does not protect against server impersonation. Build the firmware with:
+It uses the same bearer token as production's `DEVICE_SHARED_TOKEN`. Firmware 0.8.0 verifies the backend certificate using bundled public roots and waits for a valid NTP clock before connecting. Build the firmware with:
 
 ```sh
 cd watering-system-iot
@@ -77,6 +77,52 @@ GPIO 22. The screen shows tank, network, and four-zone moisture/controller
 status; watering continues safely if the OLED is missing. See the
 [`watering-system-iot` hardware guide](watering-system-iot/README.md#oled-status-display)
 for electrical details.
+
+### Diagnostics and manual testing
+
+Open **Diagnostics** in the existing website to inspect every configured soil
+sensor, the main-tank input, the four relays, and the OLED in one place. The
+30-pin board view matches the USB-C ESP32 board: select a connection to inspect
+its role. The signal trace shows the sixteen physical ADC conversions, batch
+mean, effective input, filter, calibration, relative moisture, validation
+counters, and controller decision. Relay readings report the commanded GPIO
+state; this hardware has no relay-contact or water-flow feedback.
+
+Every signed-in user may inspect diagnostics, action records, and captures.
+Only `sahakyan.raphayel@gmail.com` may issue control commands, including the
+existing watering/configuration/recovery controls. Firmware 0.8.0 is required
+for detailed readings and tests; older firmware remains visible with the
+available telemetry and documented wiring.
+
+The owner can start a **Hardware** or **Simulation** session. Both stop existing
+watering and hold automation until **Resume automation** is explicitly chosen.
+The ESP32 retains this hold across reboot. Sessions use a 30-second lease that
+the open dashboard renews. Expiry, disconnect, or reboot stops test outputs and
+clears overrides locally. Leaving the page ends renewal; ending a session does
+not restart watering.
+
+- **Hardware:** test any configured relay for 0.1–60 seconds, one relay at a
+  time. The physical tank interlock and independent output timer remain active.
+  Diagnostic pulses can test disabled, paused, or faulted zones without clearing
+  those settings or faults.
+- **Simulation:** inject soil ADC values (0–4095) and tank states through the
+  sensor and debounce pipeline, then run virtual pulses. Physical relays remain
+  off and simulated samples do not enter normal watering history.
+- Request a fresh sensor batch, scan the I2C bus, or display a timed OLED text,
+  checkerboard, or blank pattern. OLED tests last at most ten seconds.
+- Use guided scenarios or the command console, inspect accepted and actual
+  execution results, stop outputs, and save/export recent diagnostic samples.
+  A missing command acknowledgement is shown as uncertain and is not retried.
+
+Commands are validated, bound to the current device boot/session, expire within
+30 seconds, and are never queued for later delivery. Session IDs are hidden
+from viewers. Each device buffers at most 600 diagnostic snapshots; persistent
+action records expire after 30 days and captures after seven days.
+
+The exact command and snapshot contract is in
+[`docs/diagnostics-protocol.md`](docs/diagnostics-protocol.md). For an isolated
+HTTP/WebSocket smoke test, use `backend/scripts/verify_diagnostics.py` against a
+loopback development backend with a disposable database and fixture token.
 
 ### Main-tank low-water protection
 

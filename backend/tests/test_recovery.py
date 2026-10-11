@@ -50,7 +50,7 @@ def client(monkeypatch):
         yield session
 
     app.dependency_overrides[get_session] = dependency
-    user = UserSession(email="operator@example.com", google_sub="operator-1")
+    user = UserSession(email="sahakyan.raphayel@gmail.com", google_sub="operator-1")
     app.dependency_overrides[require_user] = lambda: user
     http = TestClient(app)
     try:
@@ -69,7 +69,7 @@ def test_clear_waits_for_acceptance_and_audits_without_offline_queue(client):
     assert command.command == "fault.clearPaused"
     assert command.status == "acknowledged"
     assert command.parameters["source"] == "dashboard"
-    assert command.parameters["actor"] == {"email": "operator@example.com", "subject": "operator-1"}
+    assert command.parameters["actor"] == {"email": "sahakyan.raphayel@gmail.com", "subject": "operator-1"}
     assert command.sent_at is not None and command.acknowledged_at is not None
     message = client.request.call_args.args[1]
     assert message == {"type": "fault.clearPaused", "requestId": command.id, "zoneId": 2,

@@ -12,6 +12,7 @@ constexpr char STORAGE_KEY[] = "config";
 constexpr char TELEGRAM_DEBUG_KEY[] = "tg_debug";
 constexpr char TELEGRAM_HOURLY_SILENT_KEY[] = "tg_hr_silent";
 constexpr char PAUSED_ZONES_KEY[] = "paused_zones";
+constexpr char AUTOMATION_HELD_KEY[] = "debug_hold";
 constexpr uint32_t PAUSED_ZONES_MAGIC = 0x50415553;  // "PAUS"
 constexpr uint8_t VALID_PAUSED_ZONES_MASK = (1u << ZONE_COUNT) - 1u;
 
@@ -134,6 +135,32 @@ bool ConfigStore::savePausedZones(uint8_t mask) {
       preferences.putBytes(PAUSED_ZONES_KEY, &stored, sizeof(stored));
   preferences.end();
   return bytesWritten == sizeof(stored);
+}
+
+bool ConfigStore::loadAutomationHeld(bool &held) {
+  Preferences preferences;
+  if (!preferences.begin(STORAGE_NAMESPACE, false)) return false;
+  if (!preferences.isKey(AUTOMATION_HELD_KEY)) {
+    held = false;
+    preferences.end();
+    return true;
+  }
+  uint8_t value = 0;
+  const bool valid = preferences.getBytesLength(AUTOMATION_HELD_KEY) == 1 &&
+                     preferences.getBytes(AUTOMATION_HELD_KEY, &value, 1) == 1 &&
+                     value <= 1;
+  preferences.end();
+  if (valid) held = value != 0;
+  return valid;
+}
+
+bool ConfigStore::saveAutomationHeld(bool held) {
+  Preferences preferences;
+  if (!preferences.begin(STORAGE_NAMESPACE, false)) return false;
+  const uint8_t value = held ? 1 : 0;
+  const bool success = preferences.putBytes(AUTOMATION_HELD_KEY, &value, 1) == 1;
+  preferences.end();
+  return success;
 }
 
 bool ConfigStore::loadTelegramDebugEnabled(bool &enabled) {

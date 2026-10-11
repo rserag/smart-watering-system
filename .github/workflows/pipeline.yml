@@ -15,6 +15,20 @@ jobs:
     name: Backend tests
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    services:
+      diagnostics-db:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: diagnostics
+          POSTGRES_PASSWORD: diagnostics-fixture-password
+          POSTGRES_DB: diagnostics
+        ports:
+          - 55483:5432
+        options: >-
+          --health-cmd "pg_isready -U diagnostics"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -29,6 +43,24 @@ jobs:
         working-directory: backend
       - name: Run tests
         run: python -m pytest
+        working-directory: backend
+      - name: Verify Diagnostics through HTTP, WebSocket and PostgreSQL
+        env:
+          DATABASE_URL: postgresql+asyncpg://diagnostics:diagnostics-fixture-password@127.0.0.1:55483/diagnostics
+          DEVICE_SHARED_TOKEN: diagnostics-fixture-token
+          AUTH_MODE: development
+          DEVELOPMENT_USER_EMAIL: sahakyan.raphayel@gmail.com
+          SESSION_SECRET: diagnostics-fixture-session-secret
+          FRONTEND_URL: http://127.0.0.1:4174
+        run: |
+          python -m uvicorn app.main:app --host 127.0.0.1 --port 18083 >"$RUNNER_TEMP/diagnostics-backend.log" 2>&1 &
+          backend_pid=$!
+          trap 'kill "$backend_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18083/health >/dev/null; then break; fi
+            sleep 1
+          done
+          python scripts/verify_diagnostics.py
         working-directory: backend
 
   frontend:
@@ -89,13 +121,13 @@ jobs:
           c++ -std=c++11 -Wall -Wextra -Werror -Iinclude tests/telegram_recovery_test.cpp -o "$RUNNER_TEMP/telegram-recovery-test"
           "$RUNNER_TEMP/telegram-recovery-test"
         working-directory: watering-system-iot
-      - name: Check durable channel recovery and relay interlocks
-        run: sh tests/run_controller_recovery_tests.sh
-        working-directory: watering-system-iot
       - name: Build with non-secret example configuration
         run: |
           cp include/secrets.h.example include/secrets.h
           platformio run
+        working-directory: watering-system-iot
+      - name: Check durable channel recovery and diagnostics interlocks
+        run: sh tests/run_controller_recovery_tests.sh
         working-directory: watering-system-iot
 
   deployment-config:

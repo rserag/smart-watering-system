@@ -6,8 +6,8 @@ import { type Device, type Zone, fetchJson, supportsPausedRecovery, zoneName } f
 type Confirmation = { action: 'clear' | 'resume'; bootId: string; generation: number; expiresAt: number };
 type Result = { zoneId: number; action: 'clear' | 'resume'; paused: boolean; status: 'confirmed' };
 
-export default function ZoneRecovery({ device, zone, now, onSnapshot }: {
-  device: Device; zone: Zone; now: number; onSnapshot: (device: Device) => boolean;
+export default function ZoneRecovery({ device, zone, now, onSnapshot, canControl }: {
+  device: Device; zone: Zone; now: number; onSnapshot: (device: Device) => boolean; canControl: boolean;
 }) {
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [busy, setBusy] = useState<'sending' | 'verifying' | null>(null);
@@ -21,7 +21,7 @@ export default function ZoneRecovery({ device, zone, now, onSnapshot }: {
     && now - Date.parse(device.telemetryReceivedAt) <= 30000;
   const canClear = zone.fault === 'maximum_watering_reached';
   const canResume = !!zone.paused && !zone.fault && zone.phase !== 'disabled' && device.mainTankLow === false;
-  const eligible = (canClear || canResume) && supported && device.online && fresh
+  const eligible = canControl && (canClear || canResume) && supported && device.online && fresh
     && !!device.bootId && Number.isInteger(zone.recoveryGeneration);
   const unchanged = !!confirmation && confirmation.bootId === device.bootId
     && confirmation.generation === zone.recoveryGeneration

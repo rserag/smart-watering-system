@@ -76,8 +76,8 @@ relays are driven `LOW` before the controller loads saved configuration.
 - Sensor and maximum-watering faults turn the relay off and latch the zone in a
   fault state.
 
-Automatic watering is enabled for Zone 1 in the current defaults. Zones 2–4
-remain disabled until their sensors are calibrated. At boot, the serial output
+Automatic watering is enabled for Zones 1–3 in the compiled defaults; Zone 4
+is disabled. Saved configuration takes precedence. At boot, the serial output
 prints both the global automation state and each zone's enabled state.
 
 ## Configuration persistence
@@ -109,11 +109,47 @@ Copy `include/secrets.h.example` to `include/secrets.h` and configure:
 - `WEBSOCKET_ENABLED = true` after those values are present.
 
 The ESP32 makes an outbound `wss://` connection and sends the token in an
-`Authorization: Bearer <token>` header. Certificate verification is disabled,
-so a self-signed or otherwise untrusted server certificate is accepted. WSS
-still encrypts traffic, but it does not authenticate the server and is therefore
-vulnerable to a machine-in-the-middle impersonating the backend. This mode is
-intended only for the current trusted local-network setup.
+`Authorization: Bearer <token>` header. Firmware 0.8.0 verifies the server
+certificate with the public Google Trust Services R4 and ISRG Root X1 roots in
+`include/backend_trust.h`. It waits for a valid NTP clock before connecting.
+For a private local CA, define `WEBSOCKET_CA_CERT` as the PEM certificate string
+in the excluded `include/secrets.h`. Failed verification never falls back to
+an unverified connection.
+
+## Website diagnostics
+
+Firmware 0.8.0 supports the website's unified **Diagnostics** page. Wiring is
+fixed to the table above and tank GPIO 23. Unconfigured GPIOs and power pins are
+inspect-only. Diagnostic snapshots preserve all sixteen physical ADC samples,
+the physical/effective batch values, filtering and calibration stages, tank
+debounce, controller counters/reasons, commanded relay state, and output/session
+deadlines. The displayed moisture is a calibrated relative percentage, not a
+measurement of volumetric water content.
+
+Hardware and simulation sessions acquire an exclusive 30-second lease. Starting
+either stops watering and persists an automation hold in NVS. The dashboard
+renews the lease while open; local expiry, WebSocket disconnect, and reboot
+stop outputs and clear test overrides. Automation remains held until an explicit
+`debug.automation.resume` after the session ends. Existing faults, pauses,
+calibration, and enabled settings are preserved.
+
+Hardware relay tests accept 100–60,000 ms, one relay at a time. They bypass
+ordinary soil/enabled/paused/fault eligibility so each configured output can be
+tested, while retaining the real tank interlock and independent local cutoff.
+Simulation substitutes soil/tank inputs before filtering/validation/debounce
+and runs virtual outputs with every physical relay kept LOW. Its runtime is
+discarded on exit; real sensor stabilization is reset before automation resumes.
+Synthetic telemetry is marked and excluded from normal backend history.
+
+Additional commands request fresh sensor batches, perform a bounded I2C scan,
+or display OLED checkerboard/text/off patterns for at most ten seconds.
+Timed actions report actual start and completion/cancellation events, separately
+from acceptance. Duplicate, expired, previous-boot, or previous-session requests
+cannot actuate outputs again. The backend exposes control only to
+`sahakyan.raphayel@gmail.com` and never queues diagnostic commands.
+
+See [`../docs/diagnostics-protocol.md`](../docs/diagnostics-protocol.md) for the
+wire/API contract and the root README for the dashboard workflow.
 
 ## Direct Telegram notifications
 

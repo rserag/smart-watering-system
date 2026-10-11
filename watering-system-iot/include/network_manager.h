@@ -4,6 +4,8 @@
 #include <WebSocketsClient.h>
 
 #include "config_store.h"
+#include "diagnostics_commands.h"
+#include "display_manager.h"
 #include "telegram_notifier.h"
 #include "watering_controller.h"
 
@@ -12,7 +14,7 @@ namespace watering {
 class NetworkManager {
  public:
   NetworkManager(WateringController &controller, ConfigStore &configStore,
-                 SystemConfig &config, TelegramNotifier &telegram);
+                 SystemConfig &config, TelegramNotifier &telegram, DisplayManager &display);
 
   void begin();
   void loop(uint32_t now);
@@ -31,6 +33,7 @@ class NetworkManager {
   ConfigStore &configStore_;
   SystemConfig &config_;
   TelegramNotifier &telegram_;
+  DisplayManager &display_;
   WebSocketsClient webSocket_;
 
   bool wifiWasConnected_ = false;
@@ -41,6 +44,9 @@ class NetworkManager {
   uint32_t wifiRetryMs_ = WIFI_RETRY_MIN_MS;
   uint32_t lastTelemetryAt_ = 0;
   uint32_t sequence_ = 0;
+  uint32_t debugSequence_ = 0;
+  uint32_t lastDebugSnapshotAt_ = 0;
+  DiagnosticsRequestLedger debugRequests_;
   String bootId_;
   String authorizationHeader_;
   String pendingTelegramDebugRequestId_;
@@ -66,6 +72,10 @@ class NetworkManager {
                             String &error) const;
   void handleConfigSet(JsonObjectConst root);
   void handleCommand(JsonObjectConst root, const char *type);
+  void handleDebugCommand(JsonObjectConst root, const char *type);
+  void appendDebugSession(JsonObject session, uint32_t now);
+  void sendDebugSnapshot(uint32_t now, const char *requestId = nullptr);
+  void sendDebugAction(const DebugActionEvent &event, const uint8_t *addresses = nullptr, size_t count = 0);
 
   const RecentCommand *recentCommand(const String &requestId) const;
   void rememberRequest(const String &requestId, const char *command,

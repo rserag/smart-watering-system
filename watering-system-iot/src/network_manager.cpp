@@ -6,6 +6,7 @@
 
 #include "firmware_info.h"
 #include "secrets.h"
+#include "backend_trust.h"
 
 namespace watering {
 
@@ -27,11 +28,11 @@ bool hasZoneConfigFields(JsonObjectConst zone) {
 
 NetworkManager::NetworkManager(WateringController &controller,
                                ConfigStore &configStore, SystemConfig &config,
-                               TelegramNotifier &telegram)
+                               TelegramNotifier &telegram, DisplayManager &display)
     : controller_(controller),
       configStore_(configStore),
       config_(config),
-      telegram_(telegram) {}
+      telegram_(telegram), display_(display) {}
 
 void NetworkManager::begin() {
   const uint64_t chipId = ESP.getEfuseMac();
@@ -75,14 +76,24 @@ void NetworkManager::loop(uint32_t now) {
     webSocket_.loop();
   }
 
+  now = millis();
   const bool stateChanged = controller_.consumeStateChanged();
+  if (!controller_.debugSessionActive()) display_.cancelTest(now, "session ended");
   const bool telegramSettingsChanged = telegram_.consumeSettingsChanged();
   if (webSocketConnected_ &&
       (stateChanged || telegramSettingsChanged ||
        now - lastTelemetryAt_ >= config_.telemetryIntervalMs)) {
     sendTelemetry(now);
   }
+  if (webSocketConnected_ && (stateChanged || now - lastDebugSnapshotAt_ >=
+      (controller_.debugSessionActive() ? 1000u : config_.telemetryIntervalMs))) {
+    sendDebugSnapshot(now);
+  }
   if (webSocketConnected_) {
+    DebugActionEvent action{};
+    for (uint8_t index = 0; index < 8 && controller_.consumeDebugAction(action); ++index)
+      sendDebugAction(action);
+    if (display_.consumeTestEvent(action)) sendDebugAction(action);
     sendTelegramDeliveryReport();
   }
 }
@@ -117,6 +128,8 @@ void NetworkManager::handleWifi(uint32_t now) {
   }
 
   if (!connected && wifiWasConnected_) {
+    controller_.endDebugSession(now, "Wi-Fi disconnected");
+    display_.cancelTest(now, "Wi-Fi disconnected");
     wifiWasConnected_ = false;
     webSocketConnected_ = false;
     if (webSocketStarted_) {
@@ -142,6 +155,7 @@ void NetworkManager::handleWebSocketStartup() {
       webSocketStarted_ || controller_.activeZone() >= 0) {
     return;
   }
+  if (time(nullptr) < 1700000000) return;
 
   if (!webSocketConfigured()) {
     if (!webSocketConfigurationWarningPrinted_) {
@@ -164,13 +178,15 @@ bool NetworkManager::webSocketConfigured() const {
 void NetworkManager::startWebSocket() {
   authorizationHeader_ = "Bearer ";
   authorizationHeader_ += DEVICE_TOKEN;
-  // No CA or fingerprint is supplied, so the TLS client accepts an untrusted
-  // server certificate. Traffic is encrypted, but the server is not verified.
-  webSocket_.beginSSL(WEBSOCKET_HOST, WEBSOCKET_PORT, WEBSOCKET_PATH);
+#ifdef WEBSOCKET_CA_CERT
+  webSocket_.beginSslWithCA(WEBSOCKET_HOST, WEBSOCKET_PORT, WEBSOCKET_PATH, WEBSOCKET_CA_CERT);
+#else
+  webSocket_.beginSslWithCA(WEBSOCKET_HOST, WEBSOCKET_PORT, WEBSOCKET_PATH, BACKEND_ROOT_CA);
+#endif
   // beginSSL resets request headers, so authorization must be set after it.
   webSocket_.setAuthorization(authorizationHeader_.c_str());
   webSocketStarted_ = true;
-  Serial.println("WebSocket TLS client started without certificate verification");
+  Serial.println("WebSocket TLS client started with certificate verification");
 }
 
 void NetworkManager::handleWebSocketEvent(WStype_t type, uint8_t *payload,
@@ -182,8 +198,11 @@ void NetworkManager::handleWebSocketEvent(WStype_t type, uint8_t *payload,
       telegram_.replayDeliveryReports();
       sendHello();
       sendTelemetry(millis());
+      sendDebugSnapshot(millis());
       break;
     case WStype_DISCONNECTED:
+      controller_.endDebugSession(millis(), "backend disconnected");
+      display_.cancelTest(millis(), "backend disconnected");
       if (webSocketConnected_) {
         Serial.println("WebSocket disconnected; local watering remains active");
       }
@@ -223,13 +242,15 @@ void NetworkManager::handleIncomingText(const uint8_t *payload, size_t length) {
   }
   const char *targetDevice = root["deviceId"].as<const char *>();
 
-  if (schemaVersion != CONFIG_SCHEMA_VERSION ||
+  if (!root["schemaVersion"].is<uint16_t>() || schemaVersion != CONFIG_SCHEMA_VERSION ||
       strcmp(targetDevice, DEVICE_ID) != 0) {
     Serial.println("Rejected WebSocket message for another schema or device");
     return;
   }
 
-  if (strcmp(type, "config.set") == 0) {
+  if (strncmp(type, "debug.", 6) == 0) {
+    handleDebugCommand(root, type);
+  } else if (strcmp(type, "config.set") == 0) {
     handleConfigSet(root);
   } else if (strcmp(type, "telegram.delivery.ack") == 0) {
     const char *eventId = root["eventId"] | "";
@@ -254,6 +275,212 @@ void NetworkManager::handleIncomingText(const uint8_t *payload, size_t length) {
   } else {
     Serial.println("Rejected unsupported WebSocket message type");
   }
+}
+
+
+void NetworkManager::appendDebugSession(JsonObject session, uint32_t now) {
+  const DebugMode mode = controller_.debugMode();
+  session["mode"] = mode == DebugMode::Hardware ? "hardware" :
+                    mode == DebugMode::Simulation ? "simulation" : "observe";
+  if (controller_.debugSessionActive()) {
+    session["sessionId"] = controller_.debugSessionId();
+    session["owner"] = controller_.debugOwner();
+  } else {
+    session["sessionId"] = nullptr;
+    session["owner"] = nullptr;
+  }
+  session["leaseRemainingMs"] = controller_.debugLeaseRemainingMs(now);
+  session["automationHeld"] = controller_.automationHeld();
+}
+
+void NetworkManager::sendDebugSnapshot(uint32_t now, const char *requestId) {
+  JsonDocument document;
+  document["type"] = "debug.snapshot";
+  document["schemaVersion"] = CONFIG_SCHEMA_VERSION;
+  document["deviceId"] = DEVICE_ID;
+  document["bootId"] = bootId_;
+  document["sequence"] = ++debugSequence_;
+  document["uptimeMs"] = now;
+  document["configRevision"] = config_.revision;
+  if (requestId != nullptr) document["requestId"] = requestId;
+  appendDebugSession(document["session"].to<JsonObject>(), now);
+  JsonObject hardware = document["hardware"].to<JsonObject>();
+  hardware["board"] = "esp32dev";
+  hardware["relayActiveHigh"] = true;
+  hardware["tankPin"] = controller_.tankPin();
+  JsonArray relays = hardware["relayPins"].to<JsonArray>();
+  JsonArray adcPins = hardware["sensorPins"].to<JsonArray>();
+  for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
+    relays.add(controller_.relayPin(zone));
+    adcPins.add(controller_.sensorPin(zone));
+  }
+  JsonObject oled = hardware["oled"].to<JsonObject>();
+  oled["sda"] = display_.sdaPin(); oled["scl"] = display_.sclPin();
+  oled["address"] = display_.address(); oled["available"] = display_.available();
+  JsonObject tank = document["tank"].to<JsonObject>();
+  tank["physicalLow"] = controller_.physicalTankLow();
+  tank["effectiveLow"] = controller_.effectiveTankLow();
+  tank["low"] = controller_.mainTankLow();
+  tank["pendingLow"] = controller_.pendingTankLow();
+  tank["debounceRemainingMs"] = controller_.tankDebounceRemainingMs(now);
+  if (controller_.tankOverride() < 0) tank["overrideLow"] = nullptr;
+  else tank["overrideLow"] = controller_.tankOverride() != 0;
+  JsonObject timings = document["timings"].to<JsonObject>();
+  timings["loopDurationUs"] = controller_.lastLoopDurationUs();
+  timings["maxLoopDurationUs"] = controller_.maxLoopDurationUs();
+  timings["sampleDurationUs"] = controller_.sampleDurationUs();
+  JsonArray zones = document["zones"].to<JsonArray>();
+  for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
+    const SensorState &sensor = controller_.sensorState(zone);
+    const ZoneState &state = controller_.zoneState(zone);
+    const ZoneConfig &config = controller_.config().zones[zone];
+    JsonObject item = zones.add<JsonObject>();
+    item["id"] = zone + 1;
+    item["physicalRaw"] = sensor.physicalRaw;
+    item["raw"] = sensor.latestRaw;
+    JsonArray samples = item["samples"].to<JsonArray>();
+    for (uint8_t index = 0; index < 16; ++index) samples.add(sensor.samples[index]);
+    item["minRaw"] = sensor.minRaw; item["maxRaw"] = sensor.maxRaw;
+    item["filteredRaw"] = sensor.filteredRaw;
+    item["relativeMoisturePercent"] = sensor.moisturePercent;
+    item["unclampedPercent"] = config.wetRaw == config.dryRaw ? 0.0f :
+        100.0f * (int(sensor.filteredRaw) - config.dryRaw) / (config.wetRaw - config.dryRaw);
+    item["sensorValid"] = sensor.valid;
+    item["validSamples"] = sensor.validSampleCount;
+    item["invalidSamples"] = sensor.invalidSampleCount;
+    item["dryCount"] = state.consecutiveDryReadings;
+    item["wetCount"] = state.consecutiveWetReadings;
+    item["sampleAgeMs"] = now - sensor.lastReadingAt;
+    item["phase"] = zonePhaseName(state.phase);
+    if (state.fault == FaultCode::None) item["fault"] = nullptr;
+    else item["fault"] = faultCodeName(state.fault);
+    item["enabled"] = config.enabled;
+    item["paused"] = state.paused;
+    item["relayOn"] = controller_.physicalRelayOn(zone);
+    item["virtualRelayOn"] = controller_.virtualRelayOn(zone);
+    item["decisionReason"] = controller_.decisionReason(zone);
+    item["phaseElapsedMs"] = now - state.phaseStartedAt;
+    item["pulseRemainingMs"] = controller_.pulseRemainingMs(zone, now);
+    item["wateringOnMsThisCycle"] = state.wateringOnMsThisCycle;
+    if (controller_.soilOverride(zone) < 0) item["overrideRaw"] = nullptr;
+    else item["overrideRaw"] = controller_.soilOverride(zone);
+    item["dryRaw"] = config.dryRaw; item["wetRaw"] = config.wetRaw;
+    item["startWateringPercent"] = config.startWateringPercent;
+    item["stopWateringPercent"] = config.stopWateringPercent;
+    item["pulseMs"] = config.pulseOnMs; item["soakMs"] = config.soakMs;
+    item["maxOnMs"] = config.maxWateringOnMsPerCycle;
+  }
+  if (sendJson(document)) lastDebugSnapshotAt_ = now;
+}
+
+void NetworkManager::sendDebugAction(const DebugActionEvent &event,
+                                    const uint8_t *addresses, size_t count) {
+  JsonDocument document;
+  document["type"] = "debug.action";
+  document["schemaVersion"] = CONFIG_SCHEMA_VERSION;
+  document["deviceId"] = DEVICE_ID;
+  document["bootId"] = bootId_;
+  if (event.sessionId[0] == '\0') document["sessionId"] = nullptr;
+  else document["sessionId"] = event.sessionId;
+  document["requestId"] = event.requestId;
+  document["command"] = event.command;
+  document["status"] = event.status;
+  document["uptimeMs"] = event.uptimeMs;
+  if (event.zoneId != 0) document["zoneId"] = event.zoneId;
+  if (event.message[0] != '\0') document["message"] = event.message;
+  if (addresses != nullptr) {
+    JsonArray found = document["result"]["addresses"].to<JsonArray>();
+    for (size_t index = 0; index < count; ++index) found.add(addresses[index]);
+  }
+  sendJson(document);
+}
+
+void NetworkManager::handleDebugCommand(JsonObjectConst root, const char *type) {
+  const char *requestId = root["requestId"] | "";
+  const char *error = nullptr;
+  const uint32_t epoch = static_cast<uint32_t>(time(nullptr));
+  if (!validateDiagnosticsCommand(root, bootId_.c_str(), epoch, error)) {
+    sendCommandAck(requestId, type, "rejected", error);
+    return;
+  }
+  if (strcmp(type, "debug.snapshot.get") == 0) {
+    sendDebugSnapshot(millis(), requestId);
+    return;
+  }
+  if (const auto *previous = debugRequests_.find(requestId, epoch)) {
+    if (strcmp(previous->command, type) != 0)
+      sendCommandAck(requestId, type, "rejected", "requestId belongs to another command");
+    else sendCommandAck(requestId, type, previous->accepted ? "accepted" : "rejected",
+                        previous->error[0] == '\0' ? nullptr : previous->error);
+    return;
+  }
+  if (!debugRequests_.hasCapacity(epoch)) {
+    sendCommandAck(requestId, type, "rejected", "diagnostic command capacity reached; wait for deadlines");
+    return;
+  }
+  const uint32_t now = millis();
+  if (controller_.debugSessionActive() && controller_.debugLeaseRemainingMs(now) == 0) {
+    controller_.endDebugSession(now, "session lease expired");
+    display_.cancelTest(now, "session lease expired");
+  }
+  const bool start = strcmp(type, "debug.session.start") == 0;
+  const bool resume = strcmp(type, "debug.automation.resume") == 0;
+  const bool stop = strcmp(type, "debug.output.stop") == 0;
+  const char *sessionId = root["sessionId"] | "";
+  bool success = false;
+  uint8_t addresses[126]{};
+  size_t addressCount = 0;
+  if (!start && !resume && !(stop && !controller_.debugSessionActive()) &&
+      (!controller_.debugSessionActive() || strcmp(controller_.debugSessionId(), sessionId) != 0)) {
+    error = "active matching diagnostics session required";
+  } else if (start) {
+    const char *mode = root["mode"].as<const char *>();
+    success = controller_.startDebugSession(strcmp(mode, "hardware") == 0 ? DebugMode::Hardware : DebugMode::Simulation,
+                                            sessionId, root["owner"].as<const char *>(), now, error);
+  } else if (resume) {
+    success = controller_.resumeAutomation(now, error);
+  } else if (strcmp(type, "debug.session.renew") == 0) {
+    success = controller_.renewDebugSession(sessionId, now, error);
+  } else if (strcmp(type, "debug.session.end") == 0) {
+    controller_.endDebugSession(now);
+    display_.cancelTest(now, "session ended");
+    success = true;
+  } else if (strcmp(type, "debug.output.pulse") == 0) {
+    success = controller_.debugPulse(root["zoneId"].as<uint8_t>() - 1,
+                                     root["durationMs"].as<uint32_t>(), requestId, now, error);
+  } else if (stop) {
+    success = controller_.debugStop(diagnosticsHasField(root, "zoneId") ? root["zoneId"].as<int>() - 1 : -1, now, error);
+    if (!diagnosticsHasField(root, "zoneId")) display_.cancelTest(now, "stopped by operator");
+  } else if (strcmp(type, "debug.input.set") == 0) {
+    success = strcmp(root["input"].as<const char *>(), "soil") == 0
+                  ? controller_.setDebugSoil(root["zoneId"].as<uint8_t>() - 1, root["raw"].as<int>(), now, error)
+                  : controller_.setDebugTank(root["low"].as<bool>(), now, error);
+  } else if (strcmp(type, "debug.input.clear") == 0) {
+    success = controller_.clearDebugInput(root["input"].as<const char *>(),
+        diagnosticsHasField(root, "zoneId") ? root["zoneId"].as<int>() - 1 : -1, now, error);
+  } else if (strcmp(type, "debug.sample") == 0) {
+    controller_.debugSample(now);
+    success = true;
+  } else if (strcmp(type, "debug.oled.test") == 0) {
+    success = display_.startTest(root["pattern"].as<const char *>(), root["durationMs"].as<uint32_t>(),
+                                 requestId, sessionId, now, error);
+  } else if (strcmp(type, "debug.i2c.scan") == 0) {
+    addressCount = display_.scanI2c(addresses, sizeof(addresses));
+    success = true;
+  }
+  debugRequests_.remember(requestId, type, root["expiresAtEpoch"].as<uint32_t>(), epoch, success, error);
+  sendCommandAck(requestId, type, success ? "accepted" : "rejected", error);
+  if (success && strcmp(type, "debug.output.pulse") != 0) {
+    DebugActionEvent event{};
+    strlcpy(event.sessionId, sessionId, sizeof(event.sessionId));
+    strlcpy(event.requestId, requestId, sizeof(event.requestId));
+    strlcpy(event.command, type, sizeof(event.command));
+    strlcpy(event.status, strcmp(type, "debug.oled.test") == 0 ? "started" : "completed", sizeof(event.status));
+    event.uptimeMs = millis();
+    if (diagnosticsHasField(root, "zoneId")) event.zoneId = root["zoneId"].as<uint8_t>();
+    sendDebugAction(event, strcmp(type, "debug.i2c.scan") == 0 ? addresses : nullptr, addressCount);
+  }
+  sendDebugSnapshot(millis());
 }
 
 void NetworkManager::processPendingTelegramDebug() {
@@ -359,6 +586,10 @@ void NetworkManager::handleConfigSet(JsonObjectConst root) {
     Serial.println("Rejected config.set without requestId");
     return;
   }
+  if (controller_.automationHeld()) {
+    sendConfigAck(requestId, revision, "rejected", "configuration is locked while diagnostics holds automation");
+    return;
+  }
 
   if (revision <= config_.revision) {
     sendConfigAck(requestId, revision, "rejected",
@@ -403,6 +634,12 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
 
   const char *error = nullptr;
   bool success = false;
+  if (controller_.automationHeld() && strcmp(type, "system.stopAll") != 0 &&
+      strcmp(type, "telemetry.request") != 0 && strcmp(type, "config.get") != 0 &&
+      strcmp(type, "zone.stop") != 0) {
+    sendCommandAck(requestId, type, "rejected", "ordinary controls are locked while diagnostics holds automation");
+    return;
+  }
 
   if (strcmp(type, "system.stopAll") == 0) {
     controller_.emergencyStop(millis());
@@ -472,7 +709,8 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
             zoneId - 1, durationMs, millis(), error);
       }
     } else if (strcmp(type, "zone.stop") == 0) {
-      success = controller_.stopZone(zoneId - 1, millis(), error);
+      if (controller_.automationHeld()) success = controller_.debugStop(zoneId - 1, millis(), error);
+      else success = controller_.stopZone(zoneId - 1, millis(), error);
     } else if (strcmp(type, "fault.clear") == 0) {
       error = "use fault.clearPaused with the current recovery confirmation";
     } else if (strcmp(type, "fault.clearPaused") == 0 ||
@@ -546,6 +784,8 @@ void NetworkManager::sendHello() {
   document["telegramWorkerRunning"] = telegram_.workerRunning();
   document["telegramTimeReady"] = telegram_.timeReady();
   document["uptimeMs"] = millis();
+  document["diagnosticsVersion"] = 1;
+  appendDebugSession(document["debug"].to<JsonObject>(), millis());
   sendJson(document);
 }
 
@@ -563,7 +803,11 @@ void NetworkManager::sendTelemetry(uint32_t now) {
   document["uptimeMs"] = now;
   document["configRevision"] = config_.revision;
   document["wifiRssi"] = WiFi.RSSI();
-  document["mainTankLow"] = controller_.mainTankLow();
+  document["diagnosticsVersion"] = 1;
+  document["simulation"] = controller_.debugMode() == DebugMode::Simulation;
+  document["wateringSource"] = controller_.debugMode() == DebugMode::Hardware ? "diagnostic" : "automatic";
+  appendDebugSession(document["debug"].to<JsonObject>(), now);
+  document["mainTankLow"] = controller_.debugMode() == DebugMode::Simulation ? controller_.physicalTankLow() : controller_.mainTankLow();
   document["directTelegram"] = true;
   document["telegramDebugEnabled"] = telegram_.debugEnabled();
   document["telegramHourlySilent"] = telegram_.hourlySilent();
@@ -580,8 +824,8 @@ void NetworkManager::sendTelemetry(uint32_t now) {
 
   JsonArray zones = document["zones"].to<JsonArray>();
   for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
-    const SensorState &sensor = controller_.sensorState(zone);
-    const ZoneState &state = controller_.zoneState(zone);
+    const SensorState &sensor = controller_.liveSensorState(zone);
+    const ZoneState &state = controller_.liveZoneState(zone);
     JsonObject item = zones.add<JsonObject>();
     item["id"] = zone + 1;
     item["raw"] = sensor.latestRaw;
@@ -591,7 +835,7 @@ void NetworkManager::sendTelemetry(uint32_t now) {
     item["phase"] = zonePhaseName(state.phase);
     item["paused"] = state.paused;
     item["recoveryGeneration"] = state.recoveryGeneration;
-    item["relayOn"] = state.relayOn;
+    item["relayOn"] = controller_.physicalRelayOn(zone);
     item["wateringOnMsThisCycle"] = state.wateringOnMsThisCycle;
     if (state.fault == FaultCode::None) {
       item["fault"] = nullptr;

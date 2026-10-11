@@ -6,15 +6,16 @@ import { useGarden } from './use-garden';
 import ZoneDetails from './zone-details';
 import SystemView from './system-view';
 import HistoryView from './history-view';
+import DiagnosticsView from './diagnostics-view';
 
-type View = 'live' | 'history' | 'system';
+type View = 'live' | 'history' | 'system' | 'diagnostics';
 type Navigation = { view: View; zone: number; device: string; period: string; metric: string };
 
 function readNavigation(): Navigation {
   const query = new URLSearchParams(window.location.search);
   const view = query.get('view');
   const zone = Number(query.get('zone') ?? 1);
-  return { view: view === 'history' || view === 'system' ? view : 'live', zone: Number.isInteger(zone) && zone > 0 && zone <= 16 ? zone : 1, device: query.get('device') ?? '', period: ['7d','30d'].includes(query.get('period') ?? '') ? query.get('period')! : '24h', metric: ['filteredRaw','raw','wateringOnMs'].includes(query.get('metric') ?? '') ? query.get('metric')! : 'moisturePercent' };
+  return { view: view === 'history' || view === 'system' || view === 'diagnostics' ? view : 'live', zone: Number.isInteger(zone) && zone > 0 && zone <= 16 ? zone : 1, device: query.get('device') ?? '', period: ['7d','30d'].includes(query.get('period') ?? '') ? query.get('period')! : '24h', metric: ['filteredRaw','raw','wateringOnMs'].includes(query.get('metric') ?? '') ? query.get('metric')! : 'moisturePercent' };
 }
 
 function zoneStatus(zone: Zone) {
@@ -80,14 +81,14 @@ export default function Dashboard() {
   return <div className="garden-app">
     <aside className="garden-sidebar">
       <a href="?view=live" className="garden-brand" onClick={event => { event.preventDefault(); navigate({view:'live'}); }}><span className="garden-brand-mark" /><span>Garden Watering</span></a>
-      <nav className="garden-nav" aria-label="Main navigation">{([['live', 'Overview'], ['history', 'History'], ['system', 'System']] as const).map(([view, label]) => <button key={view} type="button" aria-current={navigation.view === view ? 'page' : undefined} onClick={() => navigate({view})}><span className="garden-nav-mark" aria-hidden="true">{view === 'live' ? '◫' : view === 'history' ? '↗' : '⌘'}</span>{label}</button>)}</nav>
+      <nav className="garden-nav" aria-label="Main navigation">{([['live', 'Overview'], ['history', 'History'], ['system', 'System'], ['diagnostics', 'Diagnostics']] as const).map(([view, label]) => <button key={view} type="button" aria-current={navigation.view === view ? 'page' : undefined} onClick={() => navigate({view})}><span className="garden-nav-mark" aria-hidden="true">{view === 'live' ? '◫' : view === 'history' ? '↗' : view === 'diagnostics' ? '⚙' : '⌘'}</span>{label}</button>)}</nav>
       <div className="garden-account">
         <div className="garden-profile"><span className="garden-profile-avatar">{garden.me.name?.split(' ').map(part => part[0]).slice(0,2).join('') || 'U'}</span><span><strong>{garden.me.name}</strong><small>{garden.me.email}</small></span></div>
         <button type="button" className="garden-logout" onClick={() => void logout()} disabled={loggingOut}>{loggingOut ? 'Logging out…' : 'Log out'}</button>
       </div>
     </aside>
     <main className="garden-content">
-      <header className="garden-page-header"><div><p className="garden-eyebrow">{navigation.view === 'live' ? 'Garden overview' : navigation.view === 'history' ? 'Watering activity' : 'System'}</p><h1>{navigation.view === 'live' ? 'Your garden' : navigation.view === 'history' ? 'History' : 'Controller & notifications'}</h1></div>
+      <header className="garden-page-header"><div><p className="garden-eyebrow">{navigation.view === 'live' ? 'Garden overview' : navigation.view === 'history' ? 'Watering activity' : navigation.view === 'diagnostics' ? 'Controller workbench' : 'System'}</p><h1>{navigation.view === 'live' ? 'Your garden' : navigation.view === 'history' ? 'History' : navigation.view === 'diagnostics' ? 'Diagnostics & manual testing' : 'Controller & notifications'}</h1></div>
         <div className="garden-header-status"><span className={`garden-live ${live ? '' : 'garden-offline'}`} role="status"><span />{connectionLabel}</span>{selected && <span className="garden-caption">Last report {formatTime(selected.lastSeenAt)}</span>}</div>
       </header>
       {logoutError && <div className="garden-error" role="alert">{logoutError}</div>}
@@ -113,8 +114,8 @@ export default function Dashboard() {
               <span className="garden-zone-foot">{zone.lastWateredAt ? `Watered ${formatTime(zone.lastWateredAt)}` : 'No recorded watering'}<span aria-hidden="true">↗</span></span>
             </button>;
           })}</div> : <section className="garden-empty"><h2>No zone readings yet</h2><p>The controller is connected. Waiting for its first zone update.</p></section>}
-          {activeZone && <div ref={detailsRef}><ZoneDetails key={`${selected.id}-${activeZone.id}`} deviceId={selected.id} device={selected} zone={activeZone} online={!!live} now={garden.now} onSnapshot={garden.updateRecoverySnapshot} onSaved={garden.updateZoneName} onHistory={() => navigate({view:'history', zone:activeZone.id})} /></div>}
-        </> : navigation.view === 'history' ? <HistoryView period={navigation.period} metric={navigation.metric} onFilterChange={navigate} device={selected} zoneId={activeZone?.id ?? navigation.zone} onZoneChange={zone => navigate({zone})} /> : <SystemView key={selected.id} selected={{...selected, online:!!live}} deliveries={garden.deliveries} snapshotVersion={garden.snapshotVersion} />}
+          {activeZone && <div ref={detailsRef}><ZoneDetails key={`${selected.id}-${activeZone.id}`} deviceId={selected.id} device={selected} zone={activeZone} online={!!live} canControl={garden.me.canControl === true} now={garden.now} onSnapshot={garden.updateRecoverySnapshot} onSaved={garden.updateZoneName} onHistory={() => navigate({view:'history', zone:activeZone.id})} /></div>}
+        </> : navigation.view === 'history' ? <HistoryView period={navigation.period} metric={navigation.metric} onFilterChange={navigate} device={selected} zoneId={activeZone?.id ?? navigation.zone} onZoneChange={zone => navigate({zone})} /> : navigation.view === 'diagnostics' ? <DiagnosticsView key={selected.id} device={{...selected, online:!!live}} email={garden.me.email} zoneId={activeZone?.id ?? navigation.zone} onZoneChange={zone => navigate({zone})} /> : <SystemView key={selected.id} selected={{...selected, online:!!live}} canControl={garden.me.canControl === true} deliveries={garden.deliveries} snapshotVersion={garden.snapshotVersion} />}
       </>}
     </main>
   </div>;

@@ -21,10 +21,10 @@ watering::ConfigStore configStore;
 watering::WateringController controller(RELAY_PINS, SENSOR_PINS,
                                         MAIN_TANK_LEVEL_PIN);
 watering::TelegramNotifier telegram(controller, configStore);
-watering::NetworkManager network(controller, configStore, systemConfig,
-                                 telegram);
 watering::DisplayManager display(OLED_SDA_PIN, OLED_SCL_PIN,
                                  OLED_I2C_ADDRESS);
+watering::NetworkManager network(controller, configStore, systemConfig,
+                                 telegram, display);
 
 }  // namespace
 
@@ -37,7 +37,7 @@ void setup() {
   watering::SystemConfig savedConfig;
   if (configStore.load(savedConfig)) {
     systemConfig = savedConfig;
-    controller.applyConfig(systemConfig, millis());
+    controller.applyConfig(systemConfig, millis(), true);
     Serial.printf("Loaded saved configuration revision %lu\n",
                   static_cast<unsigned long>(systemConfig.revision));
   } else {

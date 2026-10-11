@@ -5,8 +5,8 @@ import { type Device, type Zone, fetchJson, formatTime, zoneName } from './garde
 import PulseSettings from './pulse-settings';
 import ZoneRecovery from './zone-recovery';
 
-export default function ZoneDetails({ deviceId, device, zone, online, now, onSnapshot, onSaved, onHistory }: {
-  deviceId: string; zone: Zone; online: boolean;
+export default function ZoneDetails({ deviceId, device, zone, online, canControl, now, onSnapshot, onSaved, onHistory }: {
+  deviceId: string; zone: Zone; online: boolean; canControl: boolean;
   device: Device; now: number; onSnapshot: (device: Device) => boolean;
   onSaved: (deviceId: string, zoneId: number, name: string | null) => void;
   onHistory: () => void;
@@ -61,7 +61,8 @@ export default function ZoneDetails({ deviceId, device, zone, online, now, onSna
       <div><dt>Last watered</dt><dd>{zone.lastWateredAt ? formatTime(zone.lastWateredAt) : 'No recorded watering'}</dd></div>
       <div><dt>Fault</dt><dd>{zone.fault ?? 'None'}</dd></div>
     </dl>
-    <ZoneRecovery device={{...device, online}} zone={zone} now={now} onSnapshot={onSnapshot} />
-    <PulseSettings deviceId={deviceId} zoneId={zone.id} online={online} />
+    {!canControl && <p className="garden-caption">Read-only watering controls. Only the configured operator can change controller behavior.</p>}
+    <ZoneRecovery device={{...device, online}} canControl={canControl} zone={zone} now={now} onSnapshot={onSnapshot} />
+    <PulseSettings deviceId={deviceId} zoneId={zone.id} online={online} canControl={canControl} />
   </section>;
 }

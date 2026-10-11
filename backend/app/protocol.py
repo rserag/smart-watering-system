@@ -1,6 +1,7 @@
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.diagnostics_protocol import DebugSession
 
 
 class DeviceHello(BaseModel):
@@ -13,12 +14,20 @@ class DeviceHello(BaseModel):
     config_revision: int = Field(alias="configRevision", ge=0)
     automatic_watering_enabled: bool = Field(alias="automaticWateringEnabled")
     uptime_ms: int = Field(alias="uptimeMs", ge=0)
+    diagnostics_version: Literal[1] | None = Field(default=None, alias="diagnosticsVersion")
+    debug: DebugSession | None = None
     direct_telegram: bool = Field(default=False, alias="directTelegram")
     telegram_debug_enabled: bool = Field(default=False, alias="telegramDebugEnabled")
     telegram_hourly_silent: bool = Field(default=False, alias="telegramHourlySilent")
     telegram_configured: bool = Field(default=False, alias="telegramConfigured")
     telegram_worker_running: bool = Field(default=False, alias="telegramWorkerRunning")
     telegram_time_ready: bool = Field(default=False, alias="telegramTimeReady")
+
+    @model_validator(mode="after")
+    def validate_diagnostics(self):
+        if (self.diagnostics_version == 1) != (self.debug is not None):
+            raise ValueError("Diagnostics capability and session state must be reported together")
+        return self
 
 
 class ZoneTelemetry(BaseModel):
@@ -46,6 +55,9 @@ class TelemetryMessage(BaseModel):
     uptime_ms: int = Field(alias="uptimeMs", ge=0)
     config_revision: int = Field(alias="configRevision", ge=0)
     wifi_rssi: int = Field(alias="wifiRssi", ge=-127, le=0)
+    diagnostics_version: Literal[1] | None = Field(default=None, alias="diagnosticsVersion")
+    debug: DebugSession | None = None
+    simulation: bool = Field(default=False, strict=True)
     main_tank_low: bool | None = Field(default=None, alias="mainTankLow")
     direct_telegram: bool = Field(default=False, alias="directTelegram")
     telegram_debug_enabled: bool = Field(default=False, alias="telegramDebugEnabled")
@@ -57,6 +69,12 @@ class TelemetryMessage(BaseModel):
     telegram_time_ready: bool = Field(default=False, alias="telegramTimeReady")
     telegram_last_failure_stage: str | None = Field(default=None, alias="telegramLastFailureStage", max_length=40)
     zones: list[ZoneTelemetry] = Field(min_length=1, max_length=16)
+
+    @model_validator(mode="after")
+    def validate_diagnostics(self):
+        if (self.diagnostics_version == 1) != (self.debug is not None):
+            raise ValueError("Diagnostics capability and session state must be reported together")
+        return self
 
 
 class TelegramDeliveryMessage(BaseModel):
@@ -98,6 +116,9 @@ class CommandRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_hourly_silent(self):
+        expires = self.parameters.get("expiresAtEpoch")
+        if expires is not None and (type(expires) is not int or expires < 0):
+            raise ValueError("expiresAtEpoch must be an integer UTC deadline")
         if self.command == "telegram.hourlySilent.set" and type(self.parameters.get("enabled")) is not bool:
             raise ValueError("enabled must be a boolean")
         return self
