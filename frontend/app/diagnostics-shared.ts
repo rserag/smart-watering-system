@@ -16,7 +16,7 @@ export type DebugSnapshot = {
   type: string; schemaVersion: number; deviceId: string; bootId: string | null; sequence: number | null; uptimeMs: number | null;
   configRevision: number; session: DebugSession;
   timings?: { loopDurationUs: number; maxLoopDurationUs: number; sampleDurationUs: number };
-  hardware: { board: string; source?: string; relayPins: number[]; sensorPins: number[]; tankPin: number; relayActiveHigh: boolean; oled: { sda: number; scl: number; address: number; available: boolean } };
+  hardware: { board: string; source?: string; relayPins: number[]; sensorPins: number[]; tankPin: number; relayActiveHigh: boolean; oled: { sda: number; scl: number; address: number; available: boolean | null } };
   tank: { physicalLow: boolean | null; effectiveLow: boolean | null; low: boolean | null; pendingLow: boolean | null; debounceRemainingMs: number | null; overrideLow: boolean | null };
   zones: DebugZone[];
 };

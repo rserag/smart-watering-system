@@ -152,8 +152,10 @@ test('read-only identity and old firmware disable mutation but retain observatio
   for (const name of ['Start simulation', 'Start hardware test', 'Stop all tests', 'Run pulse', 'Inject soil ADC', 'Test OLED', 'Save capture']) await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Export live CSV' })).toBeEnabled();
   expect(state.writes).toEqual([]);
-  state.supported = false; state.snapshot.hardware.source = 'documentedFallback'; state.snapshot.zones.forEach(zone => { zone.samples = []; zone.validSamples = null; zone.unclampedPercent = null; });
+  state.supported = false; state.snapshot.hardware.source = 'documentedFallback'; state.snapshot.hardware.oled.available = null; state.snapshot.zones.forEach(zone => { zone.samples = []; zone.validSamples = null; zone.unclampedPercent = null; });
   await expect(page.getByText('Firmware diagnostics are unavailable.', { exact: false })).toBeVisible();
+  await expect(page.getByText('OLED status unavailable', { exact: true })).toBeVisible();
+  await expect(page.getByText('OLED not detected', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Individual conversions, counters and calibration are unavailable', { exact: false })).toBeVisible();
 });
 
