@@ -11,7 +11,8 @@ export function useDiagnostics(device: Device, email?: string) {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState('');
   const [now, setNow] = useState(() => Date.now());
-  const [leaseFailed, setLeaseFailed] = useState(false);
+  const [leaseFailure, setLeaseFailure] = useState('');
+  const leaseFailed = leaseFailure !== '';
   const current = useRef({ device, email, data, leaseFailed });
   useEffect(() => { current.current = { device, email, data, leaseFailed }; }, [device, email, data, leaseFailed]);
   const mounted = useRef(false);
@@ -30,7 +31,11 @@ export function useDiagnostics(device: Device, email?: string) {
     const session = next.snapshot?.session;
     if (next.canControl && current.current.email === DIAGNOSTICS_OPERATOR && session?.owner === DIAGNOSTICS_OPERATOR && session.sessionId && next.snapshot?.bootId) {
       owned.current = { sessionId: session.sessionId, bootId: next.snapshot.bootId };
-    } else if (session?.mode === 'observe') owned.current = null;
+    } else if (session?.mode === 'observe') {
+      owned.current = null;
+      const age = next.receivedAt ? Date.now() - Date.parse(next.receivedAt) : Infinity;
+      if (!older && next.snapshot?.bootId === current.current.device.bootId && age >= -5000 && age <= 10000 && !next.stale) setLeaseFailure('');
+    }
     if (next.snapshot && next.receivedAt && !older) {
       const sample: TraceSample = { snapshot: next.snapshot, receivedAt: next.receivedAt };
       setTrace(previousTrace => {
@@ -95,10 +100,11 @@ export function useDiagnostics(device: Device, email?: string) {
       if (renewing || document.hidden || !session || !state.device.online || state.device.bootId !== session.bootId || state.email !== DIAGNOSTICS_OPERATOR || !state.data?.canControl || state.leaseFailed) return;
       renewing = true;
       try {
-        await diagnosticsFetch<DebugReply>(device.id, 'debug/session/renew', { sessionId: session.sessionId, expectedBootId: session.bootId }, AbortSignal.timeout(8000));
+        const reply = await diagnosticsFetch<DebugReply>(device.id, 'debug/session/renew', { sessionId: session.sessionId, expectedBootId: session.bootId }, AbortSignal.timeout(20000));
+        if (reply.status !== 'accepted') throw new Error(reply.message || 'Session renewal could not be confirmed.');
         if (mounted.current) await refresh();
       } catch (reason) {
-        if (mounted.current) { setLeaseFailed(true); setError(`Lease renewal is unconfirmed; controls are disabled. The controller stops when its local lease expires. ${reason instanceof Error ? reason.message : 'Reconnect and review the session.'}`); }
+        if (mounted.current && owned.current?.sessionId === session.sessionId && owned.current.bootId === session.bootId) setLeaseFailure(`Lease renewal is unconfirmed; new test actions are disabled for this session. Use Stop or End session, or wait for the controller's local lease to expire. Automation remains held. ${reason instanceof Error ? reason.message : 'Reconnect and review the session.'}`);
       } finally { renewing = false; }
     }, 5000);
     return () => { clearInterval(clock); clearInterval(renew); };
@@ -123,15 +129,15 @@ export function useDiagnostics(device: Device, email?: string) {
     if (!bypassBusy) operation.current = true;
     if (mounted.current) { setBusy(label); setError(''); setNotice(''); }
     try {
-      const reply = await diagnosticsFetch<DebugReply>(device.id, suffix, body, AbortSignal.timeout(15000));
+      const reply = await diagnosticsFetch<DebugReply>(device.id, suffix, body, AbortSignal.timeout(20000));
       if (reply.status !== 'accepted') throw new Error(reply.message || 'The request is unconfirmed. Review current state before repeating it.');
       if (reply.sessionId && suffix === 'debug/session' && typeof body.expectedBootId === 'string') {
         owned.current = { sessionId: reply.sessionId, bootId: body.expectedBootId };
         if (!mounted.current) endOnExit();
       }
       if (mounted.current) {
-        if (suffix === 'debug/session') setLeaseFailed(false);
-        if (suffix === 'debug/session/end') owned.current = null;
+        if (suffix === 'debug/session') setLeaseFailure('');
+        if (suffix === 'debug/session/end') { owned.current = null; setLeaseFailure(''); }
         setNotice(`${reply.command}: accepted by the controller. Execution and completion appear in the trace.`);
         await refresh();
       }
@@ -156,5 +162,5 @@ export function useDiagnostics(device: Device, email?: string) {
     if (!canStop || !ownSession || !snapshot?.session.sessionId) throw new Error('The current session cannot be ended from this dashboard.');
     return request('Ending session', 'debug/session/end', { sessionId: snapshot.session.sessionId, expectedBootId: device.bootId }, true);
   };
-  return { data, snapshot, trace, error, notice, busy, now, age, fresh, sameBoot, supported, operator, canStart, canAct, canStop, ownSession, leaseRemaining, leaseFailed, start, action, end, refresh };
+  return { data, snapshot, trace, error, notice, busy, now, age, fresh, sameBoot, supported, operator, canStart, canAct, canStop, ownSession, leaseRemaining, leaseFailed, leaseFailure, start, action, end, refresh };
 }
