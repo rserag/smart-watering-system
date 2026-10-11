@@ -363,7 +363,10 @@ async def issue(session: AsyncSession, device: Device, user: UserSession, comman
             await session.commit()
             raise HTTPException(409, {"status": "rejected", "requestId": request_id, "message": audit.message})
         # Acceptance alone is not evidence of output execution or completion.
-        snapshot, received_at = await read_snapshot(device)
+        # A full snapshot can take several seconds over the controller's TLS
+        # link. Keep observation polling short, but allow bounded readback
+        # after an accepted command without reissuing the mutation.
+        snapshot, received_at = await read_snapshot(device, timeout=5)
         observed = snapshot["session"]
         if command == "debug.session.start" and (observed["sessionId"] != session_id or observed["mode"] != parameters["mode"]):
             raise ValueError("Session start was accepted but current session could not be confirmed")

@@ -14,7 +14,7 @@ from app import main
 from app.auth import require_user
 from app.database import get_session
 from app.diagnostics_protocol import DebugAction, DebugSession, DebugSnapshot
-from app.hubs import device_hub
+from app.hubs import DeviceHub, device_hub
 from app.models import Command, Device, DiagnosticAudit, DiagnosticCapture, DiagnosticState, TelemetrySample, UserSession
 from app.protocol import TelemetryMessage
 
@@ -233,6 +233,64 @@ def test_uncertain_ack_or_readback_is_audited_without_retry(client, failure):
     assert len(client.reports["writes"]) == count + 1
     record = client.objects[(DiagnosticAudit, response.json()["detail"]["requestId"])]
     assert record.status == "unconfirmed"
+
+
+def test_delayed_renewal_readback_uses_five_seconds_but_observation_keeps_two(monkeypatch):
+    async def exercise():
+        hub = DeviceHub()
+        hub.request = AsyncMock(wraps=hub.request)
+        session_id = str(uuid4())
+        device = Device(id=DEVICE, boot_id=BOOT, config_revision=1)
+        user = UserSession(email=debug.OPERATOR_EMAIL, google_sub="operator")
+        session = AsyncMock()
+        session.add = MagicMock()
+        writes = []
+        replies = []
+
+        async def send_json(message):
+            writes.append(deepcopy(message))
+            if message["type"] == "debug.session.renew":
+                hub.resolve_reply(socket, {"type": "command.ack", "schemaVersion": 1,
+                    "deviceId": DEVICE, "requestId": message["requestId"],
+                    "command": "debug.session.renew", "status": "accepted"})
+            else:
+                assert message["type"] == "debug.snapshot.get"
+
+                async def delayed_snapshot():
+                    # Exercise the real DeviceHub asyncio deadline: this would
+                    # time out under the former two-second command readback.
+                    await asyncio.sleep(2.1)
+                    reply = snapshot(mode="simulation", session_id=session_id)
+                    reply["sequence"] = len(writes)
+                    reply["requestId"] = message["requestId"]
+                    hub.resolve_reply(socket, reply)
+
+                replies.append(asyncio.create_task(delayed_snapshot()))
+
+        socket = SimpleNamespace(send_json=send_json)
+        await hub.register(DEVICE, socket)
+        monkeypatch.setattr(debug, "device_hub", hub)
+        try:
+            result = await debug.issue(session, device, user, "debug.session.renew",
+                                       {"sessionId": session_id}, session_id, "session")
+            assert result["status"] == "accepted"
+            assert result["snapshot"]["session"]["sessionId"] == session_id
+            assert session.add.call_args.args[0].status == "accepted"
+            snapshot_calls = [call for call in hub.request.await_args_list
+                              if call.args[2] == "debug.snapshot"]
+            assert snapshot_calls[0].kwargs["timeout"] == 5
+
+            with pytest.raises(TimeoutError):
+                await debug.read_snapshot(device)
+            assert hub.request.await_args_list[-1].kwargs["timeout"] == 2
+            assert sum(message["type"] == "debug.session.renew" for message in writes) == 1
+            assert not hub._pending
+        finally:
+            for reply in replies:
+                reply.cancel()
+            await asyncio.gather(*replies, return_exceptions=True)
+
+    asyncio.run(exercise())
 
 
 @pytest.mark.parametrize("status", ["rejected", "duplicate"])

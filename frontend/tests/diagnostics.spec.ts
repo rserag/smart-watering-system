@@ -19,7 +19,7 @@ async function garden(page: Page, options: { operator?: boolean; supported?: boo
   const state = {
     snapshot, device, receivedAt: new Date().toISOString(), operator: options.operator !== false, supported: options.supported !== false,
     writes: [] as { path: string; body: Record<string, unknown> }[], actions: [] as DebugAction[], captures: [] as DebugCapture[], sockets: [] as WebSocketRoute[],
-    nextRequest: 0, failure: '', cached: false, offline: false, leaseEnds: 0, pulse: null as { requestId: string; zoneId: number; ends: number } | null,
+    nextRequest: 0, failure: '', renewUnconfirmed: false, cached: false, offline: false, leaseEnds: 0, pulse: null as { requestId: string; zoneId: number; ends: number } | null,
     getGate: Promise.resolve(), inFlight: 0, maxInFlight: 0, reads: 0,
   };
   const record = (command: string, status: string, requestId: string, parameters: Record<string, unknown> = {}, result?: Record<string, unknown>) => {
@@ -64,6 +64,13 @@ async function garden(page: Page, options: { operator?: boolean; supported?: boo
       state.writes.push({ path, body });
       const requestId = `request-${++state.nextRequest}`;
       const command = path.endsWith('/actions') ? String(body.command) : path.endsWith('/renew') ? 'debug.session.renew' : path.endsWith('/end') ? 'debug.session.end' : 'debug.session.start';
+      if (command === 'debug.session.renew' && state.renewUnconfirmed) {
+        // The controller executed renewal, but the backend could not confirm
+        // its follow-up snapshot and returned an unconfirmed HTTP outcome.
+        state.leaseEnds = Date.now() + 30000;
+        record(command, 'completed', requestId); touch();
+        return route.fulfill({ status: 504, json: { detail: { status: 'unconfirmed', requestId, message: 'Session renewal read-back could not be confirmed.' } } });
+      }
       if (state.failure) { record(command, 'rejected', requestId); return route.fulfill({ status: 409, json: { detail: state.failure } }); }
       const parameters = (body.parameters ?? {}) as Record<string, unknown>;
       if (command === 'debug.session.start') {
@@ -250,4 +257,35 @@ test('presets cover default startup and confirmations and clamp ADC noise at cal
     expect(inputs.every(raw => Number.isInteger(raw) && raw >= 0 && raw <= 4095)).toBe(true);
     await expect(page.getByRole('button', { name: 'Run sequence', exact: true })).toBeEnabled();
   }
+});
+
+test('unconfirmed renewal remains visible after successful polls and Stop until a new confirmed session', async ({ page }) => {
+  const state = await garden(page);
+  await page.getByRole('button', { name: 'Start simulation', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeEnabled();
+  state.renewUnconfirmed = true;
+  const warning = page.getByRole('alert', { name: 'Test session renewal failed' });
+  await expect(warning).toContainText('Lease renewal is unconfirmed', { timeout: 8000 });
+  const readsAtFailure = state.reads;
+  await expect.poll(() => state.reads).toBeGreaterThanOrEqual(readsAtFailure + 3);
+  await expect(warning).toContainText('new test actions are disabled');
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Sample now', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Stop all tests', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'End session', exact: true })).toBeEnabled();
+  expect(state.snapshot.session.mode).toBe('simulation');
+  expect(state.snapshot.session.leaseRemainingMs).toBeGreaterThan(10000);
+  await page.getByRole('button', { name: 'Stop all tests', exact: true }).click();
+  await expect(warning).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeDisabled();
+  // The hook does not automatically repeat an uncertain renewal.
+  await page.waitForTimeout(1500);
+  expect(state.writes.filter(write => write.path.endsWith('/debug/session/renew'))).toHaveLength(1);
+  state.renewUnconfirmed = false;
+  await page.getByRole('button', { name: 'End session', exact: true }).click();
+  await expect(warning).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Start simulation', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Start simulation', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeEnabled();
+  await expect(warning).toHaveCount(0);
 });
