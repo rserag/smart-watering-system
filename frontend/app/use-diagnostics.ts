@@ -65,7 +65,7 @@ export function useDiagnostics(device: Device, email?: string) {
   const endOnExit = useCallback(() => {
     const session = owned.current;
     owned.current = null;
-    if (session && current.current.device.online) {
+    if (session && (current.current.data?.online ?? current.current.device.online)) {
       void diagnosticsFetch(device.id, 'debug/session/end', { sessionId: session.sessionId, expectedBootId: session.bootId }, undefined, true).catch(() => { /* The controller's local lease also expires. */ });
     }
   }, [device.id]);
@@ -97,7 +97,7 @@ export function useDiagnostics(device: Device, email?: string) {
     const renew = setInterval(async () => {
       const state = current.current;
       const session = owned.current;
-      if (renewing || document.hidden || !session || !state.device.online || state.device.bootId !== session.bootId || state.email !== DIAGNOSTICS_OPERATOR || !state.data?.canControl || state.leaseFailed) return;
+      if (renewing || document.hidden || !session || !(state.data?.online ?? state.device.online) || state.device.bootId !== session.bootId || state.email !== DIAGNOSTICS_OPERATOR || !state.data?.canControl || state.leaseFailed) return;
       renewing = true;
       try {
         const reply = await diagnosticsFetch<DebugReply>(device.id, 'debug/session/renew', { sessionId: session.sessionId, expectedBootId: session.bootId }, AbortSignal.timeout(20000));
@@ -115,7 +115,9 @@ export function useDiagnostics(device: Device, email?: string) {
   const sameBoot = !!snapshot?.bootId && snapshot.bootId === device.bootId;
   const supported = !!data?.supported;
   const operator = email === DIAGNOSTICS_OPERATOR && !!data?.canControl;
-  const online = device.online && data?.online !== false;
+  // Diagnostics reports the current controller connection independently of
+  // the normal telemetry cadence and dashboard WebSocket's last report.
+  const online = data?.online ?? device.online;
   const fresh = age >= -5000 && age <= 10000 && data?.stale !== true;
   const elapsed = Math.max(0, Number.isFinite(age) ? age : 0);
   const leaseRemaining = Math.max(0, (snapshot?.session.leaseRemainingMs ?? 0) - elapsed);
