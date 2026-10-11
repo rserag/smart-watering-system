@@ -167,6 +167,12 @@ after audit writes and HTTPS calls. CI checks the
 compiled frame bounds with `python tests/verify_telegram_stack.py`; runtime
 commissioning must also confirm a healthy watermark and no resets.
 
+Firmware 0.8.2 checks JSON allocation and serialization before transmission.
+A failed WebSocket send ends the test session and closes that TCP connection
+before another frame can be sent. Serial diagnostics report only allowlisted
+message types, byte counts, outcomes, elapsed time and free heap; backend logs
+distinguish close codes from JSON decoding failures without recording payloads.
+
 Low-tank and tank-restored messages are always enabled when Telegram credentials
 are configured. The persisted Telegram debug toggle additionally sends every
 pump start and one controller report per hour. Enabling debug sends the first
