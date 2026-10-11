@@ -129,6 +129,11 @@ jobs:
       - name: Check durable channel recovery and diagnostics interlocks
         run: sh tests/run_controller_recovery_tests.sh
         working-directory: watering-system-iot
+      - name: Check compiled Telegram task stack frames
+        # The example disables Telegram, so the linker may remove its worker.
+        # Its compiled object still lets this check enforce the frame bounds.
+        run: python tests/verify_telegram_stack.py --elf .pio/build/esp32dev/src/telegram_notifier.cpp.o
+        working-directory: watering-system-iot
 
   deployment-config:
     name: Deployment config

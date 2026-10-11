@@ -6,6 +6,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
+#include <esp_heap_caps.h>
 #include <time.h>
 
 #include "firmware_info.h"
@@ -64,13 +65,6 @@ const char *recoveryFaultDescription(FaultCode fault) {
   return "Fault";
 }
 
-struct StoredAudit {
-  uint32_t magic;
-  uint16_t recordSize;
-  uint8_t count;
-  TelegramDeliveryReport reports[16];
-};
-
 }  // namespace
 
 TelegramNotifier::TelegramNotifier(WateringController &controller,
@@ -92,6 +86,7 @@ void TelegramNotifier::begin(bool debugEnabled, bool hourlySilent) {
       standardQueue_ == nullptr || settingsCommands_ == nullptr ||
       settingsReplies_ == nullptr || recoveryCommands_ == nullptr ||
       recoveryReplies_ == nullptr) {
+    strlcpy(lastFailureStage_, "queue_allocation", sizeof(lastFailureStage_));
     Serial.println("Telegram notifier queue allocation failed");
     return;
   }
@@ -103,8 +98,12 @@ void TelegramNotifier::begin(bool debugEnabled, bool hourlySilent) {
   }
   if (configured()) {
     workerRunning_ =
-        xTaskCreate(workerEntry, "telegram", 8192, this, 1, &workerTask_) ==
+        xTaskCreate(workerEntry, "telegram", WORKER_STACK_BYTES, this, 1, &workerTask_) ==
         pdPASS;
+    if (!workerRunning_) {
+      strlcpy(lastFailureStage_, "worker_allocation", sizeof(lastFailureStage_));
+      Serial.println("Telegram worker allocation failed; direct delivery unavailable");
+    }
   } else {
     Serial.println("Telegram direct delivery is not configured");
   }
@@ -540,7 +539,7 @@ bool TelegramNotifier::enqueueDebugReport(uint32_t now, const char *kind,
 bool TelegramNotifier::enqueue(QueueHandle_t queue, const char *kind,
                                const char *text, const char *requestId,
                                const RecoveryButton *button) {
-  if (!configured() || queue == nullptr) {
+  if (!configured() || !workerRunning_ || queue == nullptr) {
     return false;
   }
   NotificationJob job{};
@@ -785,7 +784,9 @@ void TelegramNotifier::loadAudit() {
   if (!preferences.begin(AUDIT_NAMESPACE, true)) {
     return;
   }
-  StoredAudit stored{};
+  StoredAudit &stored = auditStorage_;
+  static_assert(sizeof(StoredAudit) == 3976 && sizeof(TelegramDeliveryReport) == 248,
+                "existing Telegram audit NVS records must stay readable");
   const size_t length = preferences.getBytesLength(AUDIT_KEY);
   const size_t bytesRead =
       length == sizeof(stored)
@@ -794,28 +795,30 @@ void TelegramNotifier::loadAudit() {
   preferences.end();
   if (bytesRead != sizeof(stored) || stored.magic != AUDIT_MAGIC ||
       stored.recordSize != sizeof(stored) || stored.count > AUDIT_LENGTH) {
+    memset(&stored, 0, sizeof(stored));
     return;
   }
   auditCount_ = stored.count;
-  memcpy(audit_, stored.reports,
-         sizeof(TelegramDeliveryReport) * auditCount_);
   for (size_t index = 0; index < auditCount_; ++index) {
     auditDirty_[index] = true;
   }
 }
 
 void TelegramNotifier::persistAuditLocked() {
-  StoredAudit stored{};
+  StoredAudit &stored = auditStorage_;
   stored.magic = AUDIT_MAGIC;
   stored.recordSize = sizeof(stored);
   stored.count = auditCount_;
-  memcpy(stored.reports, audit_,
-         sizeof(TelegramDeliveryReport) * auditCount_);
+  memset(stored.reports + auditCount_, 0,
+         sizeof(TelegramDeliveryReport) * (AUDIT_LENGTH - auditCount_));
   Preferences preferences;
   if (!preferences.begin(AUDIT_NAMESPACE, false)) {
+    Serial.println("Telegram audit storage unavailable; report remains in memory");
     return;
   }
-  preferences.putBytes(AUDIT_KEY, &stored, sizeof(stored));
+  if (preferences.putBytes(AUDIT_KEY, &stored, sizeof(stored)) != sizeof(stored)) {
+    Serial.println("Telegram audit persistence failed; report remains in memory");
+  }
   preferences.end();
 }
 
@@ -826,7 +829,7 @@ void TelegramNotifier::upsertAudit(const TelegramDeliveryReport &report) {
   }
   size_t slot = auditCount_;
   for (size_t index = 0; index < auditCount_; ++index) {
-    if (strcmp(audit_[index].eventId, report.eventId) == 0) {
+    if (strcmp(auditStorage_.reports[index].eventId, report.eventId) == 0) {
       slot = index;
       break;
     }
@@ -835,14 +838,14 @@ void TelegramNotifier::upsertAudit(const TelegramDeliveryReport &report) {
     if (auditCount_ < AUDIT_LENGTH) {
       ++auditCount_;
     } else {
-      memmove(&audit_[0], &audit_[1],
+      memmove(&auditStorage_.reports[0], &auditStorage_.reports[1],
               sizeof(TelegramDeliveryReport) * (AUDIT_LENGTH - 1));
       memmove(&auditDirty_[0], &auditDirty_[1],
               sizeof(bool) * (AUDIT_LENGTH - 1));
       slot = AUDIT_LENGTH - 1;
     }
   }
-  audit_[slot] = report;
+  auditStorage_.reports[slot] = report;
   auditDirty_[slot] = true;
   persistAuditLocked();
   xSemaphoreGive(auditMutex_);
@@ -856,7 +859,7 @@ bool TelegramNotifier::nextDeliveryReport(TelegramDeliveryReport &report) {
   bool found = false;
   for (size_t index = 0; index < auditCount_; ++index) {
     if (auditDirty_[index]) {
-      report = audit_[index];
+      report = auditStorage_.reports[index];
       auditDirty_[index] = false;
       found = true;
       break;
@@ -873,8 +876,8 @@ void TelegramNotifier::markDeliveryReportForRetry(
     return;
   }
   for (size_t index = 0; index < auditCount_; ++index) {
-    if (strcmp(audit_[index].eventId, eventId) == 0 &&
-        audit_[index].updateSequence == updateSequence) {
+    if (strcmp(auditStorage_.reports[index].eventId, eventId) == 0 &&
+        auditStorage_.reports[index].updateSequence == updateSequence) {
       auditDirty_[index] = true;
       break;
     }
@@ -889,10 +892,10 @@ void TelegramNotifier::acknowledgeDelivery(const char *eventId,
     return;
   }
   for (size_t index = 0; index < auditCount_; ++index) {
-    if (strcmp(audit_[index].eventId, eventId) == 0 &&
-        updateSequence >= audit_[index].updateSequence) {
+    if (strcmp(auditStorage_.reports[index].eventId, eventId) == 0 &&
+        updateSequence >= auditStorage_.reports[index].updateSequence) {
       if (index + 1 < auditCount_) {
-        memmove(&audit_[index], &audit_[index + 1],
+        memmove(&auditStorage_.reports[index], &auditStorage_.reports[index + 1],
                 sizeof(TelegramDeliveryReport) * (auditCount_ - index - 1));
         memmove(&auditDirty_[index], &auditDirty_[index + 1],
                 sizeof(bool) * (auditCount_ - index - 1));
@@ -932,8 +935,11 @@ void TelegramNotifier::workerEntry(void *argument) {
 }
 
 void TelegramNotifier::workerLoop() {
+  RecoveryReply &recoveryReply = workerRecoveryReply_;
+  SettingsReply &reply = workerSettingsReply_;
+  NotificationJob &job = workerJob_;
   for (;;) {
-    RecoveryReply recoveryReply{};
+    recordWorkerStackWatermark();
     if (xQueueReceive(recoveryReplies_, &recoveryReply, 0) == pdTRUE) {
       if (telegramReady()) {
         sendRecoveryReply(recoveryReply);
@@ -942,7 +948,6 @@ void TelegramNotifier::workerLoop() {
         xQueueSend(recoveryReplies_, &recoveryReply, 0);
       }
     }
-    SettingsReply reply{};
     if (xQueueReceive(settingsReplies_, &reply, 0) == pdTRUE) {
       if (telegramReady()) {
         sendSettingsReply(reply);
@@ -951,7 +956,6 @@ void TelegramNotifier::workerLoop() {
         xQueueSend(settingsReplies_, &reply, 0);
       }
     }
-    NotificationJob job{};
     QueueHandle_t source = criticalQueue_;
     if (xQueueReceive(criticalQueue_, &job, 0) != pdTRUE) {
       source = standardQueue_;
@@ -974,10 +978,12 @@ void TelegramNotifier::workerLoop() {
       ++job.attempts;
     }
     upsertAudit(makeReport(job, "sending"));
+    recordWorkerStackWatermark();
     const SendResult result = sendMessage(job.text, job.silent, false,
                                          &job.recoveryButton,
                                          job.recoveryButton.data[0] == '\0' ? 0 : 1);
     lastSendSucceeded_ = result.success;
+    recordWorkerStackWatermark();
     if (result.success) {
       lastFailureStage_[0] = '\0';
       ++job.updateSequence;
@@ -999,6 +1005,22 @@ void TelegramNotifier::workerLoop() {
       Serial.println("Telegram notification failed; retry scheduled");
     }
     pollSettings();
+  }
+}
+
+void TelegramNotifier::recordWorkerStackWatermark() {
+  // ESP-IDF reports this in bytes, including the deepest call since startup.
+  // The canary remains enabled; this gives commissioning a measured margin.
+  const uint32_t freeBytes = uxTaskGetStackHighWaterMark(nullptr);
+  if (freeBytes < workerMinimumStackFreeBytes_) {
+    workerMinimumStackFreeBytes_ = freeBytes;
+    Serial.printf("Telegram worker minimum free stack: %lu / %lu bytes; "
+                  "heap free/min/largest: %lu/%lu/%lu bytes\n",
+                  static_cast<unsigned long>(freeBytes),
+                  static_cast<unsigned long>(WORKER_STACK_BYTES),
+                  static_cast<unsigned long>(ESP.getFreeHeap()),
+                  static_cast<unsigned long>(ESP.getMinFreeHeap()),
+                  static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
   }
 }
 
