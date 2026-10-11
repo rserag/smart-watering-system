@@ -154,7 +154,7 @@ def test_session_lifecycle_readback_and_automation_hold(client):
     command = client.reports["writes"][0]
     assert command["owner"] == debug.OPERATOR_EMAIL
     assert command["expectedBootId"] == BOOT
-    assert int(debug.utcnow().timestamp()) + 25 <= command["expiresAtEpoch"] <= int(debug.utcnow().timestamp()) + 30
+    assert int(debug.utcnow().timestamp()) + 15 <= command["expiresAtEpoch"] <= int(debug.utcnow().timestamp()) + 20
     assert client.http.post(BASE + "/debug/session", json={"mode": "simulation", "expectedBootId": BOOT}).status_code == 409
     assert client.http.post(BASE + "/commands", json={"command": "config.set", "parameters": {}}).status_code == 409
     assert action(client, "debug.automation.resume").status_code == 409
@@ -291,6 +291,76 @@ def test_delayed_renewal_readback_uses_five_seconds_but_observation_keeps_two(mo
             await asyncio.gather(*replies, return_exceptions=True)
 
     asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("database_delay", [0, 4])
+def test_renew_deadline_tolerates_ten_second_clock_skew_and_is_frozen_before_database_wait(monkeypatch, database_delay):
+    async def exercise():
+        created = datetime(2026, 10, 11, 14, 2, 30, 900000, tzinfo=timezone.utc)
+        clock = [created]
+        monkeypatch.setattr(debug, "utcnow", lambda: clock[0])
+        hub = DeviceHub()
+        monkeypatch.setattr(debug, "device_hub", hub)
+        session_id = str(uuid4())
+        device = Device(id=DEVICE, boot_id=BOOT)
+        user = UserSession(email=debug.OPERATOR_EMAIL)
+        session = AsyncMock()
+        session.add = MagicMock()
+        writes = []
+        commits = 0
+
+        async def commit():
+            nonlocal commits
+            commits += 1
+            if commits == 1:
+                clock[0] += timedelta(seconds=database_delay)
+
+        session.commit.side_effect = commit
+
+        async def send_json(message):
+            writes.append(deepcopy(message))
+            # Model the existing firmware contract with its UTC clock ten
+            # seconds behind the backend. A creation+30 deadline is rejected
+            # immediately here, matching the observed fast renewal rejection.
+            controller_epoch = int(clock[0].timestamp()) - 10
+            valid_deadline = controller_epoch < message["expiresAtEpoch"] <= controller_epoch + 30
+            if message["type"] == "debug.session.renew":
+                hub.resolve_reply(socket, {"type": "command.ack", "schemaVersion": 1,
+                    "deviceId": DEVICE, "requestId": message["requestId"], "command": message["type"],
+                    "status": "accepted" if valid_deadline else "rejected",
+                    "message": None if valid_deadline else "command deadline must be within the next 30 seconds"})
+            else:
+                assert message["type"] == "debug.snapshot.get" and valid_deadline
+                hub.resolve_reply(socket, {**snapshot(2, "simulation", session_id),
+                                          "requestId": message["requestId"]})
+
+        socket = SimpleNamespace(send_json=send_json)
+        await hub.register(DEVICE, socket)
+        result = await debug.issue(session, device, user, "debug.session.renew",
+                                   {"sessionId": session_id}, session_id, "session")
+        assert result["status"] == "accepted"
+        assert result["snapshot"]["session"]["leaseRemainingMs"] == 30000
+        assert writes[0]["expiresAtEpoch"] == int(created.timestamp()) + 20
+        audit = session.add.call_args.args[0]
+        assert audit.parameters["expiresAtEpoch"] == writes[0]["expiresAtEpoch"]
+        assert audit.created_at == created
+        assert [message["type"] for message in writes] == ["debug.session.renew", "debug.snapshot.get"]
+        assert not hub._pending
+        await hub.unregister(DEVICE, socket)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize("controller_offset,remaining", [(-10, 30), (-11, 31), (19, 1), (20, 0)])
+def test_wire_deadline_keeps_firmware_acceptance_bounds_with_clock_headroom(monkeypatch, controller_offset, remaining):
+    created = datetime(2026, 10, 11, 14, 2, 30, tzinfo=timezone.utc)
+    monkeypatch.setattr(debug, "utcnow", lambda: created)
+    message = debug.wire("debug.snapshot.get", DEVICE, BOOT, str(uuid4()), {"expiresAtEpoch": 9999999999})
+    controller_epoch = int(created.timestamp()) + controller_offset
+    assert message["expiresAtEpoch"] - controller_epoch == remaining
+    # The transport window shrinks; the firmware's strict 1..30 second
+    # acceptance bounds and 30 second local lease remain separate contracts.
+    assert (1 <= remaining <= 30) is (controller_offset in {-10, 19})
 
 
 @pytest.mark.parametrize("status", ["rejected", "duplicate"])
