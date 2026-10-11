@@ -15,9 +15,9 @@ function fixtureSnapshot(): DebugSnapshot {
   };
 }
 
-async function garden(page: Page, options: { operator?: boolean; supported?: boolean } = {}) {
+async function garden(page: Page, options: { operator?: boolean; supported?: boolean; lastSeenAgeMs?: number } = {}) {
   const snapshot = fixtureSnapshot();
-  const device: Device = { id: snapshot.deviceId, online: true, firmwareVersion: options.supported === false ? '0.7.0' : '0.8.0', bootId: snapshot.bootId, schemaVersion: 1, configRevision: 3, automaticWateringEnabled: true, lastSeenAt: new Date().toISOString(), wifiRssi: -54, mainTankLow: false, mainTankLastChangedAt: new Date().toISOString(), zones: snapshot.zones.map(zone => ({ id: zone.id, name: zone.id === 1 ? 'Tomatoes' : null, raw: zone.raw!, filteredRaw: zone.filteredRaw!, moisturePercent: zone.relativeMoisturePercent!, sensorValid: true, phase: zone.phase, relayOn: false, wateringOnMsThisCycle: 0, fault: null, lastWateredAt: null })), directTelegram: true, telegramDebugEnabled: false, telegramConfigured: true, telegramHourlySilent: false, telegramPendingMessages: 0, telegramLastSendSucceeded: true, telegramWorkerRunning: true, telegramTimeReady: true, telegramLastFailureStage: null };
+  const device: Device = { id: snapshot.deviceId, online: true, firmwareVersion: options.supported === false ? '0.7.0' : '0.8.0', bootId: snapshot.bootId, schemaVersion: 1, configRevision: 3, automaticWateringEnabled: true, lastSeenAt: new Date(Date.now() - (options.lastSeenAgeMs ?? 0)).toISOString(), wifiRssi: -54, mainTankLow: false, mainTankLastChangedAt: new Date().toISOString(), zones: snapshot.zones.map(zone => ({ id: zone.id, name: zone.id === 1 ? 'Tomatoes' : null, raw: zone.raw!, filteredRaw: zone.filteredRaw!, moisturePercent: zone.relativeMoisturePercent!, sensorValid: true, phase: zone.phase, relayOn: false, wateringOnMsThisCycle: 0, fault: null, lastWateredAt: null })), directTelegram: true, telegramDebugEnabled: false, telegramConfigured: true, telegramHourlySilent: false, telegramPendingMessages: 0, telegramLastSendSucceeded: true, telegramWorkerRunning: true, telegramTimeReady: true, telegramLastFailureStage: null };
   const state = {
     snapshot, device, receivedAt: new Date().toISOString(), operator: options.operator !== false, supported: options.supported !== false,
     writes: [] as { path: string; body: Record<string, unknown> }[], actions: [] as DebugAction[], captures: [] as DebugCapture[], sockets: [] as WebSocketRoute[],
@@ -187,6 +187,29 @@ test('rejected action, stale telemetry, reboot and offline never enable another 
   await expect(page.getByRole('button', { name: 'Stop all tests', exact: true })).toBeDisabled();
   state.offline = true;
   await expect(page.getByRole('button', { name: 'Start simulation', exact: true })).toBeDisabled();
+});
+
+test('fresh diagnostics remain controllable with delayed normal readings and still honor diagnostics offline and stale state', async ({ page }) => {
+  const state = await garden(page, { lastSeenAgeMs: 5 * 60000 });
+  await expect(page.getByText('Readings delayed', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Start hardware test', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Stop all tests', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Start simulation', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeEnabled();
+  await expect.poll(() => state.writes.filter(write => write.path.endsWith('/debug/session/renew')).length, { timeout: 8000 }).toBeGreaterThanOrEqual(1);
+  await expect(page.getByText('Readings delayed', { exact: true })).toBeVisible();
+
+  state.offline = true;
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Stop all tests', exact: true })).toBeDisabled();
+  state.offline = false; state.cached = true; state.receivedAt = new Date(Date.now() - 11000).toISOString();
+  await expect(page.getByRole('button', { name: 'Stop all tests', exact: true })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeDisabled();
+  state.cached = false;
+  await expect(page.getByRole('button', { name: 'Run pulse', exact: true })).toBeEnabled();
+  await page.getByRole('button', { name: 'Overview', exact: true }).click();
+  await expect.poll(() => state.snapshot.session.mode).toBe('observe');
+  expect(state.writes.filter(write => write.path.endsWith('/debug/session/end'))).toHaveLength(1);
 });
 
 test('editable simulation sequence completes, hardware sequence awaits execution and navigation ends lease', async ({ page }) => {
