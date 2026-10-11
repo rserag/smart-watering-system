@@ -32,6 +32,8 @@ class ZoneTelemetry(BaseModel):
     relay_on: bool = Field(alias="relayOn")
     watering_on_ms_this_cycle: int = Field(alias="wateringOnMsThisCycle", ge=0)
     fault: str | None = Field(default=None, max_length=100)
+    paused: bool = Field(default=False, strict=True)
+    recovery_generation: int = Field(default=0, alias="recoveryGeneration", strict=True, ge=0, le=4294967295)
 
 
 class TelemetryMessage(BaseModel):
@@ -65,7 +67,10 @@ class TelegramDeliveryMessage(BaseModel):
     event_id: str = Field(alias="eventId", min_length=1, max_length=100)
     request_id: str | None = Field(default=None, alias="requestId", max_length=100)
     update_sequence: int = Field(alias="updateSequence", ge=1)
-    kind: Literal["tank_low", "tank_restored", "pump_started", "hourly_debug", "manual_debug"]
+    kind: Literal[
+        "tank_low", "tank_restored", "pump_started", "hourly_debug", "manual_debug",
+        "maximum_watering_fault", "fault_cleared_paused", "channel_resumed",
+    ]
     status: Literal["queued", "sending", "retry_scheduled", "sent", "dropped"]
     attempt: int = Field(ge=0, le=255)
     uptime_ms: int = Field(alias="uptimeMs", ge=0)

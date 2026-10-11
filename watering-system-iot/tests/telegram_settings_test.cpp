@@ -10,7 +10,8 @@ int main() {
   assert(!authorizedTelegramSettings("12345", "12345", true, false));
   assert(!authorizedTelegramSettings("12345", "12345", false, true));
   // The preference must never silence safety, pump, or on-demand reports.
-  const char *kinds[] = {"tank_low", "tank_restored", "pump_started", "manual_debug"};
+  const char *kinds[] = {"tank_low", "tank_restored", "pump_started", "manual_debug",
+                         "maximum_watering_fault", "fault_cleared_paused", "channel_resumed"};
   for (const char *kind : kinds) {
     assert(!silentTelegramNotification(kind, true));
     assert(!silentTelegramNotification(kind, false));

@@ -134,6 +134,8 @@ const char *zonePhaseName(ZonePhase phase) {
       return "soaking";
     case ZonePhase::Cooldown:
       return "cooldown";
+    case ZonePhase::Paused:
+      return "paused";
     case ZonePhase::Fault:
       return "fault";
   }

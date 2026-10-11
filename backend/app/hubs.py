@@ -32,7 +32,11 @@ class DeviceHub:
             websocket = self._connections.get(device_id)
         if websocket is None:
             raise ConnectionError("Controller is offline")
-        request_id = str(uuid4())
+        # Audited actions provide their stored command ID. Other requests still
+        # receive an ID here, so every reply is bound to one pending operation.
+        request_id = message.get("requestId") or str(uuid4())
+        if not isinstance(request_id, str) or request_id in self._pending:
+            raise ValueError("Invalid or already pending request ID")
         future = asyncio.get_running_loop().create_future()
         self._pending[request_id] = (websocket, reply_type, future)
         try:

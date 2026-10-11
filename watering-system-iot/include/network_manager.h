@@ -44,7 +44,13 @@ class NetworkManager {
   String bootId_;
   String authorizationHeader_;
   String pendingTelegramDebugRequestId_;
-  String recentRequestIds_[RECENT_REQUEST_COUNT];
+  struct RecentCommand {
+    String requestId;
+    String command;
+    String error;
+    bool accepted = false;
+  };
+  RecentCommand recentCommands_[RECENT_REQUEST_COUNT];
   size_t nextRequestSlot_ = 0;
 
   void startWifiAttempt(uint32_t now);
@@ -61,8 +67,9 @@ class NetworkManager {
   void handleConfigSet(JsonObjectConst root);
   void handleCommand(JsonObjectConst root, const char *type);
 
-  bool isDuplicateRequest(const String &requestId) const;
-  void rememberRequest(const String &requestId);
+  const RecentCommand *recentCommand(const String &requestId) const;
+  void rememberRequest(const String &requestId, const char *command,
+                       bool accepted, const char *error);
   void sendHello();
   void sendTelemetry(uint32_t now);
   void sendTelegramDeliveryReport();

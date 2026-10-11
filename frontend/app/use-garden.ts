@@ -1,25 +1,30 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { type Device, type Me, type TelegramDelivery, fetchJson, mergeDeliveries } from './garden-shared';
 
 export function useGarden() {
   const [me, setMe] = useState<Me | null>(null);
   const [devices, setDevices] = useState<Device[]>([]);
+  const observedDevices = useRef<Device[]>([]);
   const [deliveries, setDeliveries] = useState<TelegramDelivery[]>([]);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [connection, setConnection] = useState<'connecting' | 'live' | 'reconnecting'>('connecting');
   const [now, setNow] = useState(0);
   const [snapshotVersion, setSnapshotVersion] = useState(0);
+  const replaceDevices = useCallback((incoming: Device[]) => {
+    observedDevices.current = incoming;
+    setDevices(incoming);
+  }, []);
 
   const load = useCallback(() => fetchJson<Me>('me').then(async identity => {
       setMe(identity);
-      if (identity.authenticated) setDevices(await fetchJson<Device[]>('devices'));
+      if (identity.authenticated) replaceDevices(await fetchJson<Device[]>('devices'));
       setError('');
     }).catch(reason => {
       setError(reason instanceof Error ? reason.message : 'The garden is temporarily unavailable.');
-    }).finally(() => setLoading(false)), []);
+    }).finally(() => setLoading(false)), [replaceDevices]);
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
@@ -28,10 +33,31 @@ export function useGarden() {
   }, []);
 
   const updateZoneName = useCallback((deviceId: string, zoneId: number, name: string | null) => {
-    setDevices(current => current.map(device => device.id === deviceId
+    replaceDevices(observedDevices.current.map(device => device.id === deviceId
       ? { ...device, zones: device.zones.map(zone => zone.id === zoneId ? { ...zone, name } : zone) }
       : device));
-  }, []);
+  }, [replaceDevices]);
+
+  const updateDevice = useCallback((incoming: Device, requireCurrentBoot = false): boolean => {
+    const current = observedDevices.current;
+    const previous = current.find(item => item.id === incoming.id);
+    // Database insertion IDs order telemetry even if server clocks move.
+    // A delayed verification read must not overwrite newer live state.
+    const olderTelemetry = previous?.telemetryId != null && incoming.telemetryId != null && incoming.telemetryId < previous.telemetryId;
+    const olderRecovery = previous?.bootId === incoming.bootId && previous?.zones.some(zone => {
+      const next = incoming.zones.find(item => item.id === zone.id);
+      return next && (next.recoveryGeneration ?? 0) < (zone.recoveryGeneration ?? 0);
+    });
+    if (previous && ((requireCurrentBoot && previous.bootId !== incoming.bootId) || olderTelemetry || olderRecovery)) return false;
+    const device = { ...incoming, zones: incoming.zones.map(zone => {
+      const known = previous?.zones.find(item => item.id === zone.id);
+      return known ? { ...zone, name: known.name } : zone;
+    }) };
+    replaceDevices([...current.filter(item => item.id !== device.id), device].sort((a, b) => a.id.localeCompare(b.id)));
+    setNow(Date.now());
+    return true;
+  }, [replaceDevices]);
+  const updateRecoverySnapshot = useCallback((incoming: Device) => updateDevice(incoming, true), [updateDevice]);
 
   useEffect(() => {
     if (!me?.authenticated) return;
@@ -49,7 +75,7 @@ export function useGarden() {
         try {
           const message = JSON.parse(event.data);
           if (message.type === 'snapshot') {
-            setDevices(message.devices);
+            replaceDevices(message.devices);
             setSnapshotVersion(version => version + 1);
             setError('');
             setConnection('live');
@@ -60,20 +86,7 @@ export function useGarden() {
           } else if (message.type === 'telegram.delivery' && message.delivery) {
             setDeliveries(current => mergeDeliveries(current, [message.delivery]).slice(0, 100));
           } else if (message.device) {
-            setDevices(current => {
-              const previous = current.find(item => item.id === message.device.id);
-              const device: Device = {
-                ...message.device,
-                // A telemetry snapshot may have started before a name was saved.
-                // Labels change through zone.updated or a reconnect snapshot.
-                zones: message.device.zones.map((zone: Device['zones'][number]) => {
-                  const known = previous?.zones.find(item => item.id === zone.id);
-                  return known ? { ...zone, name: known.name } : zone;
-                }),
-              };
-              return [...current.filter(item => item.id !== device.id), device].sort((a, b) => a.id.localeCompare(b.id));
-            });
-            setNow(Date.now());
+            updateDevice(message.device);
           }
         } catch { setError('An update could not be read. Reconnecting to the garden…'); socket?.close(); }
       };
@@ -93,8 +106,8 @@ export function useGarden() {
     };
     connect();
     return () => { disposed = true; clearTimeout(retry); socket?.close(); };
-  }, [me?.authenticated, updateZoneName]);
+  }, [me?.authenticated, updateZoneName, updateDevice, replaceDevices]);
 
   const reload = () => { setLoading(true); setError(''); return load(); };
-  return { me, devices, deliveries, error, loading, connection, now, snapshotVersion, reload, updateZoneName };
+  return { me, devices, deliveries, error, loading, connection, now, snapshotVersion, reload, updateZoneName, updateRecoverySnapshot };
 }

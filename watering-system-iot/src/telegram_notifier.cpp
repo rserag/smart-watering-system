@@ -12,6 +12,10 @@
 #include "secrets.h"
 #include "watering_types.h"
 
+#ifndef TELEGRAM_OPERATOR_USER_ID
+#define TELEGRAM_OPERATOR_USER_ID ""
+#endif
+
 namespace watering {
 
 namespace {
@@ -50,6 +54,16 @@ constexpr char AUDIT_NAMESPACE[] = "telegram";
 constexpr char AUDIT_KEY[] = "audit";
 constexpr char UPDATE_KEY[] = "update_id";
 
+const char *recoveryFaultDescription(FaultCode fault) {
+  switch (fault) {
+    case FaultCode::MaximumWateringReached: return "Watering limit reached";
+    case FaultCode::SensorInvalid: return "Sensor fault";
+    case FaultCode::EmergencyStop: return "Emergency stop";
+    case FaultCode::None: return "Fault cleared";
+  }
+  return "Fault";
+}
+
 struct StoredAudit {
   uint32_t magic;
   uint16_t recordSize;
@@ -72,9 +86,12 @@ void TelegramNotifier::begin(bool debugEnabled, bool hourlySilent) {
   standardQueue_ = xQueueCreate(STANDARD_QUEUE_LENGTH, sizeof(NotificationJob));
   settingsCommands_ = xQueueCreate(1, sizeof(SettingsCommand));
   settingsReplies_ = xQueueCreate(1, sizeof(SettingsReply));
+  recoveryCommands_ = xQueueCreate(1, sizeof(RecoveryCommand));
+  recoveryReplies_ = xQueueCreate(1, sizeof(RecoveryReply));
   if (auditMutex_ == nullptr || criticalQueue_ == nullptr ||
       standardQueue_ == nullptr || settingsCommands_ == nullptr ||
-      settingsReplies_ == nullptr) {
+      settingsReplies_ == nullptr || recoveryCommands_ == nullptr ||
+      recoveryReplies_ == nullptr) {
     Serial.println("Telegram notifier queue allocation failed");
     return;
   }
@@ -96,6 +113,8 @@ void TelegramNotifier::begin(bool debugEnabled, bool hourlySilent) {
 
 void TelegramNotifier::loop(uint32_t now, bool wifiConnected) {
   processSettingsCommands();
+  processRecoveryCommands(now);
+  enqueueWateringFaults();
   if (configured() && wifiConnected && !timeSyncStarted_) {
     configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
     timeSyncStarted_ = true;
@@ -117,7 +136,10 @@ void TelegramNotifier::loop(uint32_t now, bool wifiConnected) {
   }
 }
 
-void TelegramNotifier::setBootId(const String &bootId) { bootId_ = bootId; }
+void TelegramNotifier::setBootId(const String &bootId) {
+  bootId_ = bootId;
+  for (auto &confirmation : confirmations_) confirmation = {};
+}
 
 void TelegramNotifier::setDebugEnabled(bool enabled, uint32_t now) {
   debugEnabled_ = enabled;
@@ -163,6 +185,252 @@ void TelegramNotifier::processSettingsCommands() {
   const SettingsReply reply{command, success, hourlySilent_, debugEnabled_};
   // Only one command is in flight; the worker drains this before polling again.
   xQueueSend(settingsReplies_, &reply, 0);
+}
+
+void TelegramNotifier::enqueueWateringFaults() {
+  if (!configured()) return;
+  const uint32_t now = millis();
+  for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
+    const ZoneState &state = controller_.zoneState(zone);
+    if (state.fault != FaultCode::MaximumWateringReached ||
+        alertedFaultGeneration_[zone] == state.recoveryGeneration ||
+        !due(now, nextFaultAlertAt_[zone])) continue;
+    RecoveryButton button{};
+    strlcpy(button.text, "Review recovery", sizeof(button.text));
+    if (!telegramRecoveryCallback(button.data, sizeof(button.data), 'v',
+                                   bootId_.c_str(), zone + 1,
+                                   state.recoveryGeneration)) continue;
+    char text[MESSAGE_BYTES];
+    snprintf(text, sizeof(text),
+             "Channel %u: Watering limit reached\nController: %s\n"
+             "Pump stopped before the target moisture was confirmed.\n"
+             "Check the water supply, tubing, and sensor. Review recovery to "
+             "clear the fault and keep this channel paused.\n"
+             "Use /faults to review current faults and paused channels.",
+             static_cast<unsigned>(zone + 1), DEVICE_ID);
+    nextFaultAlertAt_[zone] = now + 5000;
+    if (enqueue(criticalQueue_, "maximum_watering_fault", text, nullptr, &button)) {
+      alertedFaultGeneration_[zone] = state.recoveryGeneration;
+    }
+  }
+}
+
+void TelegramNotifier::showRecoveryConfirmation(RecoveryReply &reply,
+                                                uint32_t now) {
+  const TelegramRecoveryRequest &request = reply.command.request;
+  const size_t zone = request.zoneId - 1;
+  const ZoneState &state = controller_.zoneState(zone);
+  const bool clear = request.action == TelegramRecoveryAction::ReviewClear;
+  if (clear && state.fault != FaultCode::MaximumWateringReached) {
+    strlcpy(reply.text, "This channel no longer has a watering-limit fault. Use /faults for its current state.", sizeof(reply.text));
+    return;
+  }
+  if (!clear && (!state.paused || state.fault != FaultCode::None)) {
+    strlcpy(reply.text, "This channel is not ready to resume. Use /faults to review its current state.", sizeof(reply.text));
+    return;
+  }
+  if (!clear && !controller_.config().zones[zone].enabled) {
+    strlcpy(reply.text, "This channel is disabled. Enable it in the dashboard before requesting Resume.", sizeof(reply.text));
+    return;
+  }
+  if (!clear && controller_.mainTankLow()) {
+    strlcpy(reply.text, "The tank is low. This channel remains paused; restore the tank level before requesting Resume.", sizeof(reply.text));
+    return;
+  }
+
+  RecoveryConfirmation &confirmation = confirmations_[nextConfirmation_];
+  nextConfirmation_ = (nextConfirmation_ + 1) % RECOVERY_CONFIRMATION_COUNT;
+  confirmation = {};
+  bool nonceExists = false;
+  do {
+    confirmation.nonce = esp_random();
+    nonceExists = false;
+    for (const auto &candidate : confirmations_) {
+      if (&candidate != &confirmation && candidate.nonce == confirmation.nonce) nonceExists = true;
+    }
+  } while (confirmation.nonce == 0 || nonceExists);
+  confirmation.generation = state.recoveryGeneration;
+  confirmation.expiresAt = now + RECOVERY_CONFIRMATION_MS;
+  confirmation.actorId = reply.command.actorId;
+  confirmation.zoneId = request.zoneId;
+  confirmation.action = clear ? TelegramRecoveryAction::ClearPaused
+                              : TelegramRecoveryAction::Resume;
+  snprintf(reply.text, sizeof(reply.text),
+           clear
+               ? "Clear the watering-limit fault for Channel %u?\nController: %s\n"
+                 "Check water supply, tubing, and sensor first. Clearing resets "
+                 "the watering allowance. This channel stays paused, including "
+                 "manual watering, until you separately choose Resume.\n"
+                 "Confirmation expires in 60 seconds."
+               : "Resume Channel %u?\nController: %s\n"
+                 "Fresh sensor checks run before watering can start. Automatic "
+                 "watering may then resume if enabled and the soil reads dry.\n"
+                 "Confirmation expires in 60 seconds.",
+           static_cast<unsigned>(request.zoneId), DEVICE_ID);
+  strlcpy(reply.buttons[0].text, clear ? "Clear and keep paused" : "Resume watering",
+          sizeof(reply.buttons[0].text));
+  strlcpy(reply.buttons[1].text, "Cancel", sizeof(reply.buttons[1].text));
+  if (telegramRecoveryCallback(reply.buttons[0].data, sizeof(reply.buttons[0].data),
+                                clear ? 'c' : 's', bootId_.c_str(), request.zoneId,
+                                confirmation.generation, confirmation.nonce) &&
+      telegramRecoveryCallback(reply.buttons[1].data, sizeof(reply.buttons[1].data),
+                                'x', bootId_.c_str(), request.zoneId,
+                                confirmation.generation, confirmation.nonce)) {
+    reply.buttonCount = 2;
+  } else {
+    confirmation.consumed = true;
+    strlcpy(reply.text, "Could not create recovery confirmation. Please try /faults again.", sizeof(reply.text));
+  }
+}
+
+void TelegramNotifier::processRecoveryCommands(uint32_t now) {
+  RecoveryCommand command{};
+  if (recoveryCommands_ == nullptr ||
+      xQueueReceive(recoveryCommands_, &command, 0) != pdTRUE) return;
+  RecoveryReply reply{};
+  reply.command = command;
+  const TelegramRecoveryRequest &request = command.request;
+  strlcpy(reply.acknowledgement, "Recovery reviewed", sizeof(reply.acknowledgement));
+
+  if (request.action == TelegramRecoveryAction::Invalid) {
+    strlcpy(reply.text, "Use /faults, /clearfault 1 through 4, or /resume 1 through 4. Recovery buttons must come from this controller's current messages.", sizeof(reply.text));
+  } else if (request.action == TelegramRecoveryAction::List) {
+    size_t used = snprintf(reply.text, sizeof(reply.text), "Controller: %s\nCurrent faults and paused channels:\n", DEVICE_ID);
+    uint8_t count = 0;
+    for (size_t zone = 0; zone < ZONE_COUNT && used < sizeof(reply.text); ++zone) {
+      const ZoneState &state = controller_.zoneState(zone);
+      if (state.fault == FaultCode::None && !state.paused) continue;
+      ++count;
+      const int written = snprintf(reply.text + used, sizeof(reply.text) - used,
+                                   "Channel %u: %s%s\n", static_cast<unsigned>(zone + 1),
+                                   recoveryFaultDescription(state.fault),
+                                   state.paused ? "; paused (manual and automatic watering blocked)" : "");
+      if (written < 0) break;
+      used += std::min(static_cast<size_t>(written), sizeof(reply.text) - used);
+      if (state.fault == FaultCode::MaximumWateringReached ||
+          (state.paused && state.fault == FaultCode::None)) {
+        RecoveryButton &button = reply.buttons[reply.buttonCount];
+        const bool clear = state.fault == FaultCode::MaximumWateringReached;
+        snprintf(button.text, sizeof(button.text), clear ? "Review Channel %u recovery" : "Review Channel %u Resume",
+                 static_cast<unsigned>(zone + 1));
+        if (telegramRecoveryCallback(button.data, sizeof(button.data), clear ? 'v' : 'p',
+                                      bootId_.c_str(), zone + 1, state.recoveryGeneration)) ++reply.buttonCount;
+      }
+    }
+    if (count == 0) strlcpy(reply.text + used, "No current faults or paused channels.", sizeof(reply.text) - used);
+  } else if (request.zoneId < 1 || request.zoneId > ZONE_COUNT ||
+             (command.callbackId[0] != '\0' && strcmp(request.bootId, bootId_.c_str()) != 0)) {
+    strlcpy(reply.text, "This recovery button belongs to an earlier controller session. Use /faults for a fresh review.", sizeof(reply.text));
+  } else {
+    const ZoneState &state = controller_.zoneState(request.zoneId - 1);
+    const bool review = request.action == TelegramRecoveryAction::ReviewClear ||
+                        request.action == TelegramRecoveryAction::ReviewResume;
+    if (review) {
+      if (command.callbackId[0] != '\0' && request.generation != state.recoveryGeneration) {
+        strlcpy(reply.text, "The channel state changed since this message. Use /faults for a fresh review.", sizeof(reply.text));
+      } else {
+        showRecoveryConfirmation(reply, now);
+      }
+    } else {
+      RecoveryConfirmation *confirmation = nullptr;
+      TelegramRecoveryConfirmationCheck confirmationCheck = TelegramRecoveryConfirmationCheck::Invalid;
+      for (auto &candidate : confirmations_) {
+        const auto check = checkTelegramRecoveryConfirmation(request, candidate, bootId_.c_str(), command.actorId, now);
+        if (check != TelegramRecoveryConfirmationCheck::Invalid) {
+          confirmation = &candidate;
+          confirmationCheck = check;
+          break;
+        }
+      }
+      reply.removeButtons = confirmation != nullptr;
+      if (confirmation == nullptr || confirmationCheck == TelegramRecoveryConfirmationCheck::Expired) {
+        strlcpy(reply.acknowledgement, "Confirmation expired or belongs to another operator", sizeof(reply.acknowledgement));
+        strlcpy(reply.text, "This confirmation expired or belongs to another operator. The channel was not changed. Use /faults for a fresh review.", sizeof(reply.text));
+      } else if (confirmationCheck == TelegramRecoveryConfirmationCheck::AlreadyConsumed) {
+        strlcpy(reply.acknowledgement, "Already processed", sizeof(reply.acknowledgement));
+        strlcpy(reply.text, confirmation->outcome, sizeof(reply.text));
+      } else {
+        // Consume before evaluating or mutating. Neither a replay nor another
+        // tap can repeat an action, including one that failed to persist.
+        confirmation->consumed = true;
+        if (request.generation != state.recoveryGeneration) {
+          strlcpy(reply.text, "The channel state changed after confirmation was opened. The channel was not changed. Use /faults for a fresh review.", sizeof(reply.text));
+        } else if (request.action == TelegramRecoveryAction::Cancel) {
+          strlcpy(reply.acknowledgement, "Recovery cancelled", sizeof(reply.acknowledgement));
+          strlcpy(reply.text, "Recovery cancelled. The channel state is unchanged.", sizeof(reply.text));
+        } else {
+          const char *error = nullptr;
+          const bool clear = request.action == TelegramRecoveryAction::ClearPaused;
+          const bool success = clear
+                                   ? controller_.clearFaultAndPause(request.zoneId - 1, request.generation, now, error)
+                                   : controller_.resumeZone(request.zoneId - 1, request.generation, now, error);
+          if (success) {
+            strlcpy(reply.acknowledgement, clear ? "Fault cleared; channel remains paused" : "Resumed; checking sensor", sizeof(reply.acknowledgement));
+            if (clear) {
+              snprintf(reply.text, sizeof(reply.text),
+                       "Channel %u: Fault cleared. Channel remains paused; manual and automatic watering are blocked.\n"
+                       "Use /resume %u or /faults to separately review Resume.\nOperator: %lld",
+                       static_cast<unsigned>(request.zoneId), static_cast<unsigned>(request.zoneId),
+                       static_cast<long long>(command.actorId));
+            } else {
+              snprintf(reply.text, sizeof(reply.text),
+                       "Channel %u: Resumed; checking sensor.\nThree fresh valid sensor samples are required before watering. "
+                       "Automatic watering may start if enabled and soil reads dry.\n"
+                       "Use /faults to review current faults and pauses.\nOperator: %lld",
+                       static_cast<unsigned>(request.zoneId), static_cast<long long>(command.actorId));
+            }
+            // Durable delivery reports also provide the recovery result and
+            // actor to the backend. This keeps audit/retry behavior shared.
+            char requestId[101];
+            snprintf(requestId, sizeof(requestId), "telegram:%lld:%lld:%u", static_cast<long long>(command.actorId),
+                     static_cast<long long>(command.updateId), static_cast<unsigned>(request.zoneId));
+            if (clear) {
+              strlcpy(reply.buttons[0].text, "Review Resume", sizeof(reply.buttons[0].text));
+              const ZoneState &pausedState = controller_.zoneState(request.zoneId - 1);
+              if (telegramRecoveryCallback(reply.buttons[0].data, sizeof(reply.buttons[0].data), 'p',
+                                            bootId_.c_str(), request.zoneId, pausedState.recoveryGeneration)) {
+                reply.buttonCount = 1;
+              }
+            }
+            strlcpy(confirmation->outcome, reply.text, sizeof(confirmation->outcome));
+            if (enqueue(criticalQueue_, clear ? "fault_cleared_paused" : "channel_resumed", reply.text, requestId,
+                        reply.buttonCount == 0 ? nullptr : &reply.buttons[0])) {
+              // The queued, audited notification delivers the outcome.
+              reply.text[0] = '\0';
+            }
+          } else {
+            strlcpy(reply.acknowledgement, "Recovery could not complete", sizeof(reply.acknowledgement));
+            snprintf(reply.text, sizeof(reply.text), "Channel %u: %s could not complete (%s). Use /faults to review its current state.",
+                     static_cast<unsigned>(request.zoneId), clear ? "fault clearing" : "Resume", error == nullptr ? "controller rejected action" : error);
+          }
+        }
+        if (confirmation->outcome[0] == '\0') strlcpy(confirmation->outcome, reply.text, sizeof(confirmation->outcome));
+      }
+    }
+  }
+  // There is exactly one command in flight. The worker waits for this main-task
+  // snapshot and never reads controller state or mutates controller settings.
+  xQueueSend(recoveryReplies_, &reply, 0);
+}
+
+void TelegramNotifier::sendRecoveryReply(const RecoveryReply &reply) {
+  rememberUpdate(reply.command.updateId);
+  if (reply.command.callbackId[0] != '\0') {
+    JsonDocument request;
+    request["callback_query_id"] = reply.command.callbackId;
+    request["text"] = reply.acknowledgement;
+    JsonDocument response;
+    callTelegram("answerCallbackQuery", request, response);
+  }
+  if (reply.removeButtons && reply.command.messageId != 0) {
+    JsonDocument request;
+    request["chat_id"] = TELEGRAM_CHAT_ID;
+    request["message_id"] = reply.command.messageId;
+    request["reply_markup"]["inline_keyboard"].to<JsonArray>();
+    JsonDocument response;
+    callTelegram("editMessageReplyMarkup", request, response);
+  }
+  if (reply.text[0] != '\0') sendMessage(reply.text, false, false, reply.buttons, reply.buttonCount);
 }
 
 bool TelegramNotifier::configured() const {
@@ -242,11 +510,12 @@ bool TelegramNotifier::enqueueDebugReport(uint32_t now, const char *kind,
     const SensorState &sensor = controller_.sensorState(zone);
     const ZoneState &state = controller_.zoneState(zone);
     const int written = snprintf(
-        text + used, sizeof(text) - used, "Z%u: %u%%, %s%s%s\n",
+        text + used, sizeof(text) - used, "Z%u: %u%%, %s%s%s%s\n",
         static_cast<unsigned>(zone + 1),
         static_cast<unsigned>(sensor.moisturePercent), zonePhaseName(state.phase),
         state.fault == FaultCode::None ? "" : ", fault=",
-        state.fault == FaultCode::None ? "" : faultCodeName(state.fault));
+        state.fault == FaultCode::None ? "" : faultCodeName(state.fault),
+        state.paused ? ", paused" : "");
     if (written < 0) {
       break;
     }
@@ -260,7 +529,8 @@ bool TelegramNotifier::enqueueDebugReport(uint32_t now, const char *kind,
 }
 
 bool TelegramNotifier::enqueue(QueueHandle_t queue, const char *kind,
-                               const char *text, const char *requestId) {
+                               const char *text, const char *requestId,
+                               const RecoveryButton *button) {
   if (!configured() || queue == nullptr) {
     return false;
   }
@@ -272,6 +542,7 @@ bool TelegramNotifier::enqueue(QueueHandle_t queue, const char *kind,
     strlcpy(job.requestId, requestId, sizeof(job.requestId));
   }
   strlcpy(job.text, text, sizeof(job.text));
+  if (button != nullptr) job.recoveryButton = *button;
   // Capture the preference on the main task so retries retain the same mode.
   // NotificationJob is private and never persisted, so its layout is safe to extend.
   job.silent = silentTelegramNotification(kind, hourlySilent_);
@@ -287,7 +558,8 @@ bool TelegramNotifier::enqueue(QueueHandle_t queue, const char *kind,
 }
 
 TelegramNotifier::SendResult TelegramNotifier::sendMessage(
-    const char *text, bool silent, bool settingsButtons) {
+    const char *text, bool silent, bool settingsButtons,
+    const RecoveryButton *buttons, uint8_t buttonCount) {
   JsonDocument request;
   request["chat_id"] = TELEGRAM_CHAT_ID;
   request["text"] = text;
@@ -301,6 +573,13 @@ TelegramNotifier::SendResult TelegramNotifier::sendMessage(
     JsonObject off = row.add<JsonObject>();
     off["text"] = "With sound";
     off["callback_data"] = "hourly_silent:off";
+  } else if (buttons != nullptr && buttonCount > 0) {
+    JsonArray keyboard = request["reply_markup"]["inline_keyboard"].to<JsonArray>();
+    for (uint8_t index = 0; index < buttonCount; ++index) {
+      JsonObject button = keyboard.add<JsonArray>().add<JsonObject>();
+      button["text"] = buttons[index].text;
+      button["callback_data"] = buttons[index].data;
+    }
   }
   JsonDocument response;
   return callTelegram("sendMessage", request, response);
@@ -361,7 +640,7 @@ void TelegramNotifier::rememberUpdate(int64_t updateId) {
 }
 
 void TelegramNotifier::pollSettings() {
-  if (settingsPending_ || !telegramReady() || !due(millis(), nextPollAt_)) {
+  if (settingsPending_ || recoveryPending_ || !telegramReady() || !due(millis(), nextPollAt_)) {
     return;
   }
   nextPollAt_ = millis() + 5000;
@@ -389,15 +668,40 @@ void TelegramNotifier::pollSettings() {
   // The configured destination is also the control allowlist. Never reply to
   // or act on messages from other chats, forwarded messages, or other bots.
   const String chatId = message["chat"]["id"].as<String>();
+  const bool forwarded = !message["forward_origin"].isNull() ||
+                         !message["forward_from"].isNull() ||
+                         !message["forward_from_chat"].isNull() ||
+                         (message["is_automatic_forward"] | false);
+  const JsonObjectConst sender = isCallback ? callback["from"].as<JsonObjectConst>()
+                                           : message["from"].as<JsonObjectConst>();
   if (!authorizedTelegramSettings(
-          chatId.c_str(), TELEGRAM_CHAT_ID, !message["forward_origin"].isNull(),
-          (isCallback ? callback["from"]["is_bot"] : message["from"]["is_bot"]).as<bool>())) {
+          chatId.c_str(), TELEGRAM_CHAT_ID, forwarded, sender["is_bot"].as<bool>())) {
     rememberUpdate(updateId);
     return;
   }
   String text = isCallback ? String(callback["data"] | "")
                            : String(message["text"] | "");
   text.trim();
+  const TelegramRecoveryRequest recovery = telegramRecoveryRequest(text.c_str(), isCallback, ZONE_COUNT);
+  if (recovery.action != TelegramRecoveryAction::Ignore) {
+    const String actorId = sender["id"].as<String>();
+    if (!sender["id"].is<int64_t>() || !authorizedTelegramRecovery(
+            chatId.c_str(), TELEGRAM_CHAT_ID, actorId.c_str(),
+            TELEGRAM_OPERATOR_USER_ID, forwarded, sender["is_bot"].as<bool>())) {
+      // Recovery has a stricter operator allowlist than hourly preferences.
+      // Do not send a response to unauthorized senders or acknowledge their action.
+      rememberUpdate(updateId);
+      return;
+    }
+    RecoveryCommand command{};
+    command.updateId = updateId;
+    command.actorId = sender["id"].as<int64_t>();
+    command.messageId = message["message_id"] | 0LL;
+    command.request = recovery;
+    strlcpy(command.callbackId, callback["id"] | "", sizeof(command.callbackId));
+    if (xQueueSend(recoveryCommands_, &command, 0) == pdTRUE) recoveryPending_ = true;
+    return;
+  }
   SettingsCommand command{};
   command.updateId = updateId;
   command.action = telegramSettingsAction(text.c_str(), isCallback);
@@ -425,7 +729,8 @@ void TelegramNotifier::sendSettingsReply(const SettingsReply &reply) {
   char text[320];
   snprintf(text, sizeof(text),
            "%sController: %s\nHourly status updates: %s\nHourly notifications: %s\n"
-           "Choose the sound setting below, or use /hourly_silent on or off.",
+           "Choose the sound setting below, or use /hourly_silent on or off.\n"
+           "Use /faults to review faults and paused channels.",
            reply.success ? "" : "Could not save setting. Please try again.\n",
            DEVICE_ID, reply.debugEnabled ? "enabled" : "disabled",
            reply.silent ? "silent" : "with sound");
@@ -619,6 +924,15 @@ void TelegramNotifier::workerEntry(void *argument) {
 
 void TelegramNotifier::workerLoop() {
   for (;;) {
+    RecoveryReply recoveryReply{};
+    if (xQueueReceive(recoveryReplies_, &recoveryReply, 0) == pdTRUE) {
+      if (telegramReady()) {
+        sendRecoveryReply(recoveryReply);
+        recoveryPending_ = false;
+      } else {
+        xQueueSend(recoveryReplies_, &recoveryReply, 0);
+      }
+    }
     SettingsReply reply{};
     if (xQueueReceive(settingsReplies_, &reply, 0) == pdTRUE) {
       if (telegramReady()) {
@@ -651,7 +965,9 @@ void TelegramNotifier::workerLoop() {
       ++job.attempts;
     }
     upsertAudit(makeReport(job, "sending"));
-    const SendResult result = sendMessage(job.text, job.silent);
+    const SendResult result = sendMessage(job.text, job.silent, false,
+                                         &job.recoveryButton,
+                                         job.recoveryButton.data[0] == '\0' ? 0 : 1);
     lastSendSucceeded_ = result.success;
     if (result.success) {
       lastFailureStage_[0] = '\0';

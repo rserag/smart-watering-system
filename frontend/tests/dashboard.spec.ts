@@ -29,6 +29,9 @@ async function garden(page: Page) {
     historyFetches:0, historyFailure:false, historyGate:Promise.resolve(),
     pulse:{zoneId:1,revision:2,pulseOnMs:8000,soakMs:90000,maxPulseOnMs:45000},
     pulseWrites:[] as {pulseOnMs:number;expectedRevision:number}[], pulseError:'', pulseReadError:'', pulseGate:Promise.resolve(),
+    recoveryWrites:[] as {action:'clear'|'resume';expectedBootId:string;expectedRecoveryGeneration:number}[],
+    recoveryError:'', recoveryGate:Promise.resolve(), recoveryReportGate:Promise.resolve(), recoveryBroadcast:true,
+    recoveryNext:null as Device | null,
   };
   await page.clock.install({time:new Date(now.getTime()-1000)});
   await page.clock.pauseAt(now);
@@ -37,6 +40,30 @@ async function garden(page: Page) {
     const path = url.pathname;
     if (path === '/api/me') return route.fulfill({json:{authenticated:state.authenticated,authMode:'development',name:'Test gardener'}});
     if (path === '/api/devices') return route.fulfill({json:[state.device]});
+    if (path.endsWith('/latest')) {
+      await state.recoveryReportGate;
+      if (state.recoveryNext) { state.device=state.recoveryNext; state.recoveryNext=null; }
+      return route.fulfill({json:state.device});
+    }
+    if (path.endsWith('/zones/1/recovery')) {
+      expect(route.request().method()).toBe('POST');
+      const body = route.request().postDataJSON();
+      state.recoveryWrites.push(body);
+      await state.recoveryGate;
+      if (state.recoveryError) return route.fulfill({status:409,json:{detail:state.recoveryError}});
+      const zone = state.device.zones[0];
+      if (body.expectedBootId !== state.device.bootId || body.expectedRecoveryGeneration !== zone.recoveryGeneration) {
+        return route.fulfill({status:409,json:{detail:'Channel state changed. Review the current fault before trying again.'}});
+      }
+      const next={...state.device,zones:[{...zone,paused:body.action==='clear',fault:null,
+        phase:body.action==='clear'?'paused':'stabilizing',sensorValid:body.action==='clear',relayOn:false,
+        recoveryGeneration:(zone.recoveryGeneration??0)+1,wateringOnMsThisCycle:0}]};
+      if (state.recoveryBroadcast) {
+        state.device=next;
+        state.sockets.at(-1)!.send(JSON.stringify({type:'telemetry',device:state.device}));
+      } else { state.recoveryNext=next; }
+      return route.fulfill({json:{zoneId:1,action:body.action,paused:body.action==='clear',status:'confirmed'}});
+    }
     if (path.endsWith('/telegram/hourly-silent')) {
       expect(route.request().method()).toBe('PATCH');
       const body = route.request().postDataJSON();
@@ -109,6 +136,158 @@ test('silent hourly setting saves both modes and waits for device confirmation',
   await toggle.click();
   await expect(toggle).toHaveAttribute('aria-checked','false');
   expect(state.hourlyWrites).toEqual([{enabled:true},{enabled:false}]);
+});
+
+function faultedDevice(): Device {
+  return {...device,firmwareVersion:'0.7.0',telemetryReceivedAt:now.toISOString(),telemetryBootId:device.bootId,
+    zones:[{...device.zones[0],fault:'maximum_watering_reached',phase:'fault',wateringOnMsThisCycle:60000,paused:false,recoveryGeneration:12}]};
+}
+
+test('clearing keeps the channel paused until a separately confirmed resume', async ({page}) => {
+  const state=await garden(page);
+  state.device=faultedDevice();
+  let release!:()=>void;
+  state.recoveryGate=new Promise<void>(resolve=>{release=resolve;});
+  await page.goto('/');
+  await page.getByRole('button',{name:'Clear fault',exact:true}).click();
+  await expect(page.getByText('The pump will stay off. Resume watering is a separate action when you are ready.')).toBeVisible();
+  await page.screenshot({path:`test-results/clear-paused-confirmation-${test.info().project.name}.png`,fullPage:true});
+  await page.getByRole('button',{name:'Clear and keep paused',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Confirming with controller…'})).toBeDisabled();
+  await expect(page.getByText(/Fault cleared\. This channel stays paused/)).toHaveCount(0);
+  expect(state.recoveryWrites).toEqual([{action:'clear',expectedBootId:'test-boot',expectedRecoveryGeneration:12}]);
+  release();
+  await expect(page.getByText(/Fault cleared\. This channel stays paused/)).toBeVisible();
+  await expect(page.getByRole('button',{name:/Tomatoes, Zone 1,.*Paused/})).toBeVisible();
+  expect(state.device.zones[0].relayOn).toBe(false);
+  await expect(page.getByRole('button',{name:'Resume watering',exact:true})).toBeVisible();
+  await page.screenshot({path:`test-results/channel-paused-${test.info().project.name}.png`,fullPage:true});
+  await page.getByRole('button',{name:'Resume watering',exact:true}).click();
+  await expect(page.getByText(/The controller will check fresh sensor readings/)).toBeVisible();
+  await page.getByRole('button',{name:'Confirm resume',exact:true}).click();
+  await expect(page.getByText('Channel resumed — checking fresh sensor readings.')).toBeVisible();
+  expect(state.recoveryWrites.at(-1)).toEqual({action:'resume',expectedBootId:'test-boot',expectedRecoveryGeneration:13});
+  state.device={...state.device,zones:[{...state.device.zones[0],phase:'monitoring',sensorValid:true}]};
+  state.sockets[0].send(JSON.stringify({type:'telemetry',device:state.device}));
+  await expect(page.getByText('Channel resumed. Automatic monitoring is active.')).toBeVisible();
+  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth}));
+  expect(dimensions.scroll).toBeLessThanOrEqual(dimensions.width);
+  await page.screenshot({path:`test-results/channel-recovery-${test.info().project.name}.png`,fullPage:true});
+});
+
+test('recovery waits for new telemetry as well as acknowledgment', async ({page}) => {
+  const state=await garden(page);
+  state.device=faultedDevice(); state.recoveryBroadcast=false;
+  let release!:()=>void;
+  state.recoveryReportGate=new Promise<void>(resolve=>{release=resolve;});
+  await page.goto('/');
+  await page.getByRole('button',{name:'Clear fault',exact:true}).click();
+  await page.getByRole('button',{name:'Clear and keep paused',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Checking channel state…'})).toBeDisabled();
+  await expect(page.getByText(/Fault cleared\. This channel stays paused/)).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Resume watering',exact:true})).toHaveCount(0);
+  release();
+  await expect(page.getByText(/Fault cleared\. This channel stays paused/)).toBeVisible();
+});
+
+test('recovery confirmation becomes unusable when a new fault replaces it', async ({page}) => {
+  const state=await garden(page); state.device=faultedDevice();
+  await page.goto('/');
+  await page.getByRole('button',{name:'Clear fault',exact:true}).click();
+  state.device={...state.device,zones:[{...state.device.zones[0],recoveryGeneration:14}]};
+  state.sockets[0].send(JSON.stringify({type:'telemetry',device:state.device}));
+  await expect(page.getByRole('button',{name:'Clear and keep paused',exact:true})).toBeDisabled();
+  await expect(page.getByRole('alert')).toHaveText('The channel state changed. Cancel and review its current status.');
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  expect(state.recoveryWrites).toEqual([]);
+});
+
+test('recovery failure keeps the fault visible and offers no automatic resume', async ({page}) => {
+  const state=await garden(page); state.device=faultedDevice();
+  state.recoveryError='Recovery could not be confirmed. Refresh the channel before trying again.';
+  await page.goto('/');
+  await page.getByRole('button',{name:'Clear fault',exact:true}).click();
+  await page.getByRole('button',{name:'Clear and keep paused',exact:true}).click();
+  await expect(page.getByRole('alert')).toHaveText(state.recoveryError);
+  await expect(page.getByText('maximum_watering_reached',{exact:true})).toBeVisible();
+  await expect(page.getByRole('button',{name:'Resume watering',exact:true})).toHaveCount(0);
+});
+
+test('recovery controls require supported firmware and fresh telemetry from this boot', async ({page}) => {
+  const state=await garden(page); state.device={...faultedDevice(),firmwareVersion:'0.6.0'};
+  await page.goto('/');
+  const button=page.getByRole('button',{name:'Clear fault',exact:true});
+  await expect(button).toBeDisabled();
+  await expect(page.getByText('Update the controller to firmware 0.7.0 to recover a channel here.')).toBeVisible();
+  for (const changed of [
+    {...faultedDevice(),online:false},
+    {...faultedDevice(),telemetryBootId:'previous-boot'},
+    {...faultedDevice(),telemetryReceivedAt:new Date(now.getTime()-31000).toISOString()},
+  ]) {
+    state.device=changed;
+    state.sockets[0].send(JSON.stringify({type:'telemetry',device:state.device}));
+    await expect(button).toBeDisabled();
+  }
+  expect(state.recoveryWrites).toEqual([]);
+});
+
+test('saved pause survives dashboard reload and tank low blocks resume', async ({page}) => {
+  const state=await garden(page);
+  state.device={...faultedDevice(),mainTankLow:true,zones:[{...faultedDevice().zones[0],fault:null,paused:true,phase:'paused',recoveryGeneration:13}]};
+  await page.goto('/');
+  await expect(page.getByRole('heading',{name:'Channel paused',exact:true})).toBeVisible();
+  await expect(page.getByText('Refill the main tank before resuming this channel.')).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole('heading',{name:'Channel paused',exact:true})).toBeVisible();
+  state.device={...state.device,mainTankLow:false};
+  state.sockets.at(-1)!.send(JSON.stringify({type:'telemetry',device:state.device}));
+  await expect(page.getByRole('button',{name:'Resume watering',exact:true})).toBeEnabled();
+  expect(state.recoveryWrites).toEqual([]);
+});
+
+test('recovery confirmation expires and a later generation cannot verify an earlier action', async ({page}) => {
+  const state=await garden(page); state.device=faultedDevice();
+  await page.goto('/');
+  await page.getByRole('button',{name:'Clear fault',exact:true}).click();
+  await page.clock.runFor(65000);
+  state.device={...state.device,telemetryReceivedAt:new Date(now.getTime()+65000).toISOString()};
+  state.sockets[0].send(JSON.stringify({type:'telemetry',device:state.device}));
+  await expect(page.getByRole('button',{name:'Clear and keep paused',exact:true})).toBeDisabled();
+  await expect(page.getByRole('alert')).toHaveText('This confirmation expired. Cancel and review the channel again.');
+  await page.getByRole('button',{name:'Cancel',exact:true}).click();
+  expect(state.recoveryWrites).toEqual([]);
+  await page.getByRole('button',{name:'Clear fault',exact:true}).click();
+  state.recoveryBroadcast=false;
+  let release!:()=>void;
+  state.recoveryReportGate=new Promise<void>(resolve=>{release=resolve;});
+  await page.getByRole('button',{name:'Clear and keep paused',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Checking channel state…'})).toBeDisabled();
+  state.recoveryNext={...state.recoveryNext!,zones:[{...state.recoveryNext!.zones[0],recoveryGeneration:14}]};
+  release();
+  await expect(page.getByRole('alert')).toHaveText('The channel state changed during recovery. Review its current status before continuing.');
+  await expect(page.getByText(/Fault cleared\. This channel stays paused/)).toHaveCount(0);
+});
+
+test('delayed recovery verification cannot overwrite a newer Telegram resume', async ({page}) => {
+  const state=await garden(page); state.device={...faultedDevice(),telemetryId:100};
+  let release!:()=>void;
+  const gate=new Promise<void>(resolve=>{release=resolve;});
+  await page.route('**/api/devices/test-garden/latest', async route => {
+    const captured=state.device;
+    await gate;
+    return route.fulfill({json:captured});
+  });
+  await page.goto('/');
+  await page.getByRole('button',{name:'Clear fault',exact:true}).click();
+  await page.getByRole('button',{name:'Clear and keep paused',exact:true}).click();
+  await expect(page.getByRole('button',{name:'Checking channel state…'})).toBeDisabled();
+  state.device={...state.device,telemetryId:102,zones:[{...state.device.zones[0],paused:false,phase:'stabilizing',recoveryGeneration:14}]};
+  state.sockets[0].send(JSON.stringify({type:'telemetry',device:state.device}));
+  release();
+  await expect(page.getByRole('alert')).toHaveText('The channel state changed during recovery. Review its current status before continuing.');
+  await expect(page.getByRole('heading',{name:'Channel paused',exact:true})).toHaveCount(0);
+  await expect(page.getByText(/Fault cleared\. This channel stays paused/)).toHaveCount(0);
+  await expect(page.getByRole('button',{name:'Resume watering',exact:true})).toHaveCount(0);
 });
 
 test('failed silent setting save retains reported state and allows retry', async ({page}) => {
