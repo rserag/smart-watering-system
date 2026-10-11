@@ -224,3 +224,28 @@ test('capture JSON and CSV preserve raw values and command lifecycle', async ({ 
   expect(content).toContain('physicalRaw,effectiveRaw,filteredRaw'); expect(content).toContain('"2100"');
   expect(state.captures).toHaveLength(1);
 });
+
+test('presets cover default startup and confirmations and clamp ADC noise at calibration edges', async ({ page }) => {
+  const state = await garden(page);
+  await page.getByRole('button', { name: 'Start simulation', exact: true }).click();
+  await page.getByRole('button', { name: 'Dry → wet', exact: true }).click();
+  const editor = page.getByRole('textbox', { name: 'Editable sequence (JSON)' });
+  const dryWet = JSON.parse(await editor.inputValue()) as { parameters?: { raw: number }; waitMs?: number }[];
+  // Three startup samples plus three confirmation samples at the default 5s
+  // cadence must fit before the preset moves away from the dry endpoint.
+  expect(dryWet[0].parameters?.raw).toBe(state.snapshot.zones[0].dryRaw);
+  expect(dryWet[0].waitMs).toBeGreaterThan(6 * 5000);
+  expect(dryWet[2].parameters?.raw).toBe(state.snapshot.zones[0].wetRaw);
+  expect(dryWet[2].waitMs).toBeGreaterThanOrEqual(6 * 5000);
+  await expect(page.getByText('Pulse and soak timers keep real time.', { exact: false })).toBeVisible();
+  for (const dryRaw of [55, 4040]) {
+    state.snapshot.zones[0].dryRaw = dryRaw;
+    await expect.poll(async () => await page.getByRole('region', { name: 'From pin to watering decision' }).textContent()).toContain(`Dry ${dryRaw.toLocaleString('en-US')}`);
+    await page.getByRole('button', { name: 'Noisy sensor', exact: true }).click();
+    const noisy = JSON.parse(await editor.inputValue()) as { command: string; parameters?: { raw: number } }[];
+    const inputs = noisy.filter(step => step.command === 'debug.input.set').map(step => step.parameters!.raw);
+    expect(inputs).toHaveLength(5);
+    expect(inputs.every(raw => Number.isInteger(raw) && raw >= 0 && raw <= 4095)).toBe(true);
+    await expect(page.getByRole('button', { name: 'Run sequence', exact: true })).toBeEnabled();
+  }
+});

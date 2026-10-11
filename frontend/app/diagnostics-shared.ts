@@ -89,14 +89,17 @@ export function parseScenario(text: string, mode: DebugMode): { steps: ScenarioS
 
 export function scenarioPreset(preset: string, zoneId: number, zone?: DebugZone): ScenarioStep[] {
   const dry = zone?.dryRaw ?? 2600, wet = zone?.wetRaw ?? 1250;
-  const set = (raw: number, waitMs = 5500): ScenarioStep => ({ command: 'debug.input.set', parameters: { input: 'soil', zoneId, raw }, waitMs });
+  const set = (raw: number, waitMs = 5500): ScenarioStep => ({ command: 'debug.input.set', parameters: { input: 'soil', zoneId, raw: Math.max(0, Math.min(4095, Math.round(raw))) }, waitMs });
   const clear: ScenarioStep = { command: 'debug.input.clear', parameters: { input: 'all' } };
   switch (preset) {
     case 'noisy': return [set(dry), set(dry - 150), set(dry + 150), set(dry - 90), set(dry), clear];
     case 'invalid': return [set(0, 16000), set(dry, 16000), clear];
     case 'tank': return [{ command: 'debug.input.set', parameters: { input: 'tank', low: true }, waitMs: 1000 }, { command: 'debug.input.set', parameters: { input: 'tank', low: false }, waitMs: 2500 }, clear];
     case 'pulse': return [{ command: 'debug.output.pulse', parameters: { zoneId, durationMs: 1000 }, waitMs: 1200 }, { command: 'wait', waitMs: 3000 }, { command: 'debug.output.pulse', parameters: { zoneId, durationMs: 1000 }, waitMs: 1200 }];
-    default: return [set(dry, 16000), set(Math.round((dry + wet) / 2), 5500), set(wet, 16000), clear];
+    // At the default 5-second cadence, 35 seconds covers three startup samples,
+    // three dry confirmations and a sample margin; wet readings also need time
+    // to settle through the filter. Output and soak timers remain real time.
+    default: return [set(dry, 35000), set(Math.round((dry + wet) / 2), 5500), set(wet, 35000), clear];
   }
 }
 
