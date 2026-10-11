@@ -1,6 +1,7 @@
 import asyncio
 import hmac
 import logging
+from contextlib import suppress
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any
@@ -18,6 +19,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.auth import lookup_user_session, require_user, router as auth_router
 from app.config import get_settings
 from app.database import SessionLocal, engine, get_session
+from app.diagnostics import (router as diagnostics_router, controller_states, is_operator, require_operator,
+    redact, store_state, guard_conflicting_write, record_snapshot, record_action, purge_diagnostics)
+from app.diagnostics_protocol import DebugSnapshot, DebugAction
 from app.device_configuration import ConfigurationSnapshot, active_thresholds, save_configuration_query
 from app.history_export import history_csv
 from app.hubs import dashboard_hub, device_hub
@@ -69,7 +73,19 @@ async def lifespan(_: FastAPI):
         await connection.run_sync(Base.metadata.create_all)
         if needs_legacy_names:
             await connection.execute(legacy_zone_names_query())
+    async def retention_worker():
+        while True:
+            try:
+                async with SessionLocal() as session:
+                    await purge_diagnostics(session)
+            except Exception:
+                logger.exception("diagnostic retention cleanup failed")
+            await asyncio.sleep(3600)
+    retention = asyncio.create_task(retention_worker())
     yield
+    retention.cancel()
+    with suppress(asyncio.CancelledError):
+        await retention
     await engine.dispose()
 
 
@@ -88,6 +104,7 @@ app.add_middleware(
     allow_headers=["Content-Type"],
 )
 app.include_router(auth_router)
+app.include_router(diagnostics_router)
 
 
 @app.get("/health")
@@ -187,6 +204,8 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
         "schemaVersion": device.schema_version,
         "configRevision": device.config_revision,
         "automaticWateringEnabled": device.automatic_watering_enabled,
+        "diagnosticsVersion": controller_states.get(device.id, {}).get("version"),
+        "debug": redact(controller_states.get(device.id, {}).get("state", {}), False),
         "lastSeenAt": device.last_seen_at.isoformat(),
         "telemetryReceivedAt": latest.received_at.isoformat() if latest is not None else None,
         "telemetryBootId": latest.boot_id if latest is not None else None,
@@ -266,11 +285,12 @@ async def update_zone_pulse(
     device_id: str,
     zone_id: Annotated[int, Path(ge=1, le=4)],
     request: PulseRequest,
-    _: Annotated[UserSession, Depends(require_user)],
+    user: Annotated[UserSession, Depends(require_operator)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     if await session.get(Device, device_id) is None:
         raise HTTPException(404, "Unknown device")
+    await guard_conflicting_write(session, device_id, user, "config.set")
     return await configure_pulse(device_id, zone_id, request)
 
 
@@ -455,15 +475,22 @@ def supports_manual_telegram_debug(firmware_version: str | None) -> bool:
 async def create_command(
     device_id: str,
     request: CommandRequest,
-    _: Annotated[UserSession, Depends(require_user)],
+    user: Annotated[UserSession, Depends(require_operator)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     device = await session.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Unknown device")
+    await guard_conflicting_write(session, device_id, user, request.command)
     if request.command == "fault.clear":
         raise HTTPException(409, "Use channel recovery to clear a fault and keep the channel paused.")
-    command = Command(id=str(uuid4()), device_id=device_id, command=request.command, parameters=request.parameters, status="queued")
+    # Deadlines are fixed at creation; never grant old watering a new deadline
+    # when a controller reconnects.
+    parameters = dict(request.parameters)
+    if request.command in {"zone.water", "telegram.debug.send"}:
+        parameters["expiresAtEpoch"] = min(parameters.get("expiresAtEpoch", int(utcnow().timestamp()) + 30), int(utcnow().timestamp()) + 30)
+        parameters["expectedBootId"] = device.boot_id
+    command = Command(id=str(uuid4()), device_id=device_id, command=request.command, parameters=parameters, status="queued")
     if request.command == "telegram.hourlySilent.set" and not supports_hourly_silent(device.firmware_version):
         raise HTTPException(409, "Firmware 0.6.0 or newer is required for silent hourly updates")
     session.add(command)
@@ -480,12 +507,13 @@ async def recover_channel(
     device_id: str,
     zone_id: Annotated[int, Path(ge=1, le=16)],
     request: RecoveryRequest,
-    user: Annotated[UserSession, Depends(require_user)],
+    user: Annotated[UserSession, Depends(require_operator)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     device = await session.get(Device, device_id)
     if device is None:
         raise HTTPException(404, "Unknown device")
+    await guard_conflicting_write(session, device_id, user, "zone.resume")
     if not supports_paused_recovery(device.firmware_version):
         raise HTTPException(409, "Firmware 0.7.0 or newer is required to clear and keep paused.")
     if device_id not in await device_hub.connected_ids():
@@ -498,12 +526,13 @@ async def recover_channel(
 async def set_telegram_hourly_silent(
     device_id: str,
     request: HourlySilentRequest,
-    _: Annotated[UserSession, Depends(require_user)],
+    user: Annotated[UserSession, Depends(require_operator)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     device = await session.get(Device, device_id)
     if device is None:
         raise HTTPException(404, "Unknown device")
+    await guard_conflicting_write(session, device_id, user, "telegram.hourlySilent.set")
     if not supports_hourly_silent(device.firmware_version):
         raise HTTPException(409, "Firmware 0.6.0 or newer is required for silent hourly updates")
     return await configure_hourly_silent(device_id, request.enabled)
@@ -512,12 +541,13 @@ async def set_telegram_hourly_silent(
 @app.post("/api/devices/{device_id}/telegram/debug", status_code=202)
 async def send_telegram_debug(
     device_id: str,
-    _: Annotated[UserSession, Depends(require_user)],
+    user: Annotated[UserSession, Depends(require_operator)],
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
     device = await session.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Unknown device")
+    await guard_conflicting_write(session, device_id, user, "telegram.debug.send")
     if not supports_manual_telegram_debug(device.firmware_version):
         raise HTTPException(
             status_code=409,
@@ -551,6 +581,21 @@ async def deliver_queued_commands(device_id: str) -> None:
             select(Command).where(Command.device_id == device_id, Command.status == "queued").order_by(Command.created_at)
         )
         for command in result.scalars():
+            if command.command not in {"telemetry.request", "config.get"}:
+                try:
+                    await guard_conflicting_write(session, device_id, None, command.command, queued=True)
+                except HTTPException as exc:
+                    command.status = "failed"
+                    command.result = exc.detail
+                    continue
+            if command.command == "zone.water":
+                device = await session.get(Device, device_id)
+                expires = command.parameters.get("expiresAtEpoch")
+                if (type(expires) is not int or expires <= int(utcnow().timestamp()) or
+                    command.parameters.get("expectedBootId") != device.boot_id):
+                    command.status = "failed"
+                    command.result = "Queued watering expired or belongs to a previous controller boot."
+                    continue
             if command.command in UNSAFE_QUEUED_RECOVERY_COMMANDS:
                 command.status = "failed"
                 command.result = "Recovery cannot be delivered after reconnecting. Review current channel state and try again."
@@ -575,6 +620,8 @@ async def record_hello(hello: DeviceHello) -> None:
         device.config_revision = hello.config_revision
         device.automatic_watering_enabled = hello.automatic_watering_enabled
         device.last_seen_at = observed_at
+        await session.flush()
+        await store_state(session, hello.device_id, hello.boot_id, hello.diagnostics_version, hello.debug, observed_at)
         await close_interrupted_telegram_deliveries(
             session, hello.device_id, hello.boot_id, observed_at
         )
@@ -613,6 +660,7 @@ async def update_watering_event(
     zone_id: int,
     relay_on: bool,
     received_at: datetime,
+    source: str = "automatic",
 ) -> None:
     previous_result = await session.execute(
         select(ZoneSample)
@@ -623,7 +671,7 @@ async def update_watering_event(
     previous = previous_result.scalar_one_or_none()
     previous_on = previous.relay_on if previous is not None else False
     if relay_on and not previous_on:
-        session.add(WateringEvent(device_id=device_id, zone_id=zone_id, started_at=received_at, source="automatic", status="running"))
+        session.add(WateringEvent(device_id=device_id, zone_id=zone_id, started_at=received_at, source=source, status="running"))
     elif not relay_on and previous_on:
         event_result = await session.execute(
             select(WateringEvent)
@@ -674,6 +722,12 @@ async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
         device.boot_id = message.boot_id
         device.config_revision = message.config_revision
         device.last_seen_at = received_at
+        await store_state(session, message.device_id, message.boot_id, message.diagnostics_version, message.debug, received_at)
+        # Injected decisions never enter normal samples, tank transitions or
+        # watering events. The diagnostic snapshot/ring captures that pipeline.
+        if message.simulation or (message.debug is not None and message.debug.mode == "simulation"):
+            await session.commit()
+            return await latest_snapshot(session, device)
         sample = TelemetrySample(
             device_id=message.device_id,
             boot_id=message.boot_id,
@@ -691,7 +745,8 @@ async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
                 session, message.device_id, message.main_tank_low, received_at
             )
             for zone in message.zones:
-                await update_watering_event(session, message.device_id, zone.id, zone.relay_on, received_at)
+                await update_watering_event(session, message.device_id, zone.id, zone.relay_on, received_at,
+                    source="diagnostic" if message.debug is not None and message.debug.mode == "hardware" else "automatic")
                 session.add(
                     ZoneSample(
                         telemetry_id=sample.id,
@@ -836,8 +891,8 @@ async def device_websocket(websocket: WebSocket) -> None:
             try:
                 if message_type == "telemetry":
                     telemetry = TelemetryMessage.model_validate(raw)
-                    if telemetry.device_id != device_id:
-                        await websocket.close(code=4003, reason="Device ID changed")
+                    if telemetry.device_id != device_id or telemetry.boot_id != hello.boot_id:
+                        await websocket.close(code=4003, reason="Device or boot ID changed")
                         return
                     if telemetry.config_revision != requested_revision:
                         requested_revision = telemetry.config_revision
@@ -850,6 +905,21 @@ async def device_websocket(websocket: WebSocket) -> None:
                     if ack.device_id == device_id:
                         device_hub.resolve_reply(websocket, raw)
                         await record_command_ack(device_id, ack)
+                elif message_type == "debug.snapshot":
+                    snapshot_message = DebugSnapshot.model_validate(raw)
+                    if snapshot_message.deviceId != device_id or snapshot_message.bootId != hello.boot_id:
+                        await websocket.close(code=4003, reason="Diagnostic device or boot ID changed")
+                        return
+                    async with SessionLocal() as session:
+                        await record_snapshot(session, snapshot_message)
+                    device_hub.resolve_reply(websocket, raw)
+                elif message_type == "debug.action":
+                    action_message = DebugAction.model_validate(raw)
+                    if action_message.deviceId != device_id or action_message.bootId != hello.boot_id:
+                        await websocket.close(code=4003, reason="Diagnostic device or boot ID changed")
+                        return
+                    async with SessionLocal() as session:
+                        await record_action(session, action_message)
                 elif message_type == "telegram.delivery":
                     delivery_message = TelegramDeliveryMessage.model_validate(raw)
                     if delivery_message.device_id != device_id:

@@ -160,5 +160,6 @@ async def me(user: Annotated[UserSession | None, Depends(optional_user)]) -> dic
         "authMode": settings.auth_mode,
         "email": user.email,
         "name": user.name,
+        "canControl": user.email.casefold() == "sahakyan.raphayel@gmail.com",
     }
 

@@ -9,7 +9,7 @@ from app.auth import require_user
 from app.database import get_session
 from app.hubs import DeviceHub, device_hub
 from app.main import app
-from app.models import Device
+from app.models import Device, UserSession
 
 
 def configuration():
@@ -52,7 +52,7 @@ def client(monkeypatch):
         yield session
 
     app.dependency_overrides[get_session] = dependency
-    app.dependency_overrides[require_user] = lambda: object()
+    app.dependency_overrides[require_user] = lambda: UserSession(email="sahakyan.raphayel@gmail.com")
     monkeypatch.setattr(device_hub, "request", AsyncMock(side_effect=request))
     http = TestClient(app)
     try:

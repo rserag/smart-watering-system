@@ -12,6 +12,8 @@ class ConfigStore {
   // A storage error/corrupt record is a failure so the controller can fail safe.
   bool loadPausedZones(uint8_t &mask);
   bool savePausedZones(uint8_t mask);
+  bool loadAutomationHeld(bool &held);
+  bool saveAutomationHeld(bool held);
   bool loadTelegramDebugEnabled(bool &enabled);
   bool saveTelegramDebugEnabled(bool enabled);
   bool loadTelegramHourlySilent(bool &enabled);

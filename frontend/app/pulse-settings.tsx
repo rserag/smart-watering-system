@@ -5,7 +5,7 @@ import { fetchJson } from './garden-shared';
 
 type Pulse = { zoneId: number; revision: number; pulseOnMs: number; soakMs: number; maxPulseOnMs: number };
 
-export default function PulseSettings({ deviceId, zoneId, online }: { deviceId: string; zoneId: number; online: boolean }) {
+export default function PulseSettings({ deviceId, zoneId, online, canControl }: { deviceId: string; zoneId: number; online: boolean; canControl: boolean }) {
   const [editing, setEditing] = useState(false);
   const [settings, setSettings] = useState<Pulse | null>(null);
   const [seconds, setSeconds] = useState('');
@@ -37,7 +37,7 @@ export default function PulseSettings({ deviceId, zoneId, online }: { deviceId: 
 
   async function save(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!valid || !settings || !online || busy || mustReload) return;
+    if (!canControl || !valid || !settings || !online || busy || mustReload) return;
     setBusy('saving'); setError(''); setNotice('');
     try {
       const result = await fetchJson<Pulse>(path, {
@@ -56,7 +56,7 @@ export default function PulseSettings({ deviceId, zoneId, online }: { deviceId: 
   return <section className="garden-pulse-settings" aria-labelledby="pulse-heading">
     <div className="garden-detail-heading">
       <div><h3 id="pulse-heading">Watering pulse</h3><p className="garden-caption">How long the pump runs before pausing to let water soak in.</p></div>
-      {!editing && <button ref={editButton} type="button" className="garden-button" disabled={!online} onClick={() => void load()}>Configure pulse</button>}
+      {!editing && <button ref={editButton} type="button" className="garden-button" disabled={!online || !canControl} onClick={() => void load()}>Configure pulse</button>}
     </div>
     {!online && <p className="garden-caption" role="status">Connect to the controller to change its pulse.</p>}
     {editing && <form className="garden-name-editor garden-pulse-editor" onSubmit={save} onKeyDown={event => {
@@ -67,8 +67,8 @@ export default function PulseSettings({ deviceId, zoneId, online }: { deviceId: 
         <label htmlFor="pulse-seconds">Pulse duration (seconds)</label>
         <div className="garden-name-fields">
           <input ref={input} id="pulse-seconds" type="number" inputMode="decimal" min="1" max={settings.maxPulseOnMs / 1000} step="0.001" required value={seconds}
-            disabled={!!busy || !online || mustReload} onChange={event => setSeconds(event.target.value)} aria-invalid={!valid} aria-describedby="pulse-help pulse-impact" />
-          <button type="submit" className="garden-button garden-button-primary" disabled={!!busy || !online || mustReload || !valid || pulseOnMs === settings.pulseOnMs}>{busy === 'saving' ? 'Confirming with controller…' : 'Save pulse'}</button>
+            disabled={!!busy || !online || !canControl || mustReload} onChange={event => setSeconds(event.target.value)} aria-invalid={!valid} aria-describedby="pulse-help pulse-impact" />
+          <button type="submit" className="garden-button garden-button-primary" disabled={!!busy || !online || !canControl || mustReload || !valid || pulseOnMs === settings.pulseOnMs}>{busy === 'saving' ? 'Confirming with controller…' : 'Save pulse'}</button>
         </div>
         <p id="pulse-help" className="garden-caption">1–{settings.maxPulseOnMs / 1000} seconds. Controller reported {settings.pulseOnMs / 1000} seconds, followed by a {settings.soakMs / 1000}-second soak.</p>
         <p id="pulse-impact" className="garden-pulse-impact">Saving stops any watering in progress on this controller and restarts its watering checks.</p>

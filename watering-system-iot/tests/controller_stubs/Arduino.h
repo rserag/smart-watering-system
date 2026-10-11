@@ -9,6 +9,10 @@ constexpr int HIGH = 1;
 constexpr int INPUT = 0;
 constexpr int OUTPUT = 1;
 constexpr int ADC_11db = 3;
+using portMUX_TYPE = int;
+constexpr int portMUX_INITIALIZER_UNLOCKED = 0;
+inline void portENTER_CRITICAL(portMUX_TYPE *) {}
+inline void portEXIT_CRITICAL(portMUX_TYPE *) {}
 
 namespace controller_test {
 inline uint32_t now = 0;
@@ -18,6 +22,7 @@ inline unsigned relayHighWrites = 0;
 }
 
 inline uint32_t millis() { return controller_test::now; }
+inline uint32_t micros() { return controller_test::now * 1000; }
 inline void pinMode(uint8_t, int) {}
 inline void analogSetPinAttenuation(uint8_t, int) {}
 inline void delayMicroseconds(unsigned) {}

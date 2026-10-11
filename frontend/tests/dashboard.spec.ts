@@ -38,7 +38,7 @@ async function garden(page: Page) {
   await page.route('**/api/**', async route => {
     const url = new URL(route.request().url());
     const path = url.pathname;
-    if (path === '/api/me') return route.fulfill({json:{authenticated:state.authenticated,authMode:'development',name:'Test gardener'}});
+    if (path === '/api/me') return route.fulfill({json:{authenticated:state.authenticated,authMode:'development',name:'Test gardener',email:'sahakyan.raphayel@gmail.com',canControl:true}});
     if (path === '/api/devices') return route.fulfill({json:[state.device]});
     if (path.endsWith('/latest')) {
       await state.recoveryReportGate;

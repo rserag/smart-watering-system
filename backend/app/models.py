@@ -139,6 +139,46 @@ class Command(Base):
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DiagnosticState(Base):
+    """Latest capability/hold report, separate from ordinary business telemetry."""
+    __tablename__ = "diagnostic_states"
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"), primary_key=True)
+    boot_id: Mapped[str] = mapped_column(String(100))
+    version: Mapped[int | None] = mapped_column(Integer)
+    state: Mapped[dict] = mapped_column(JSONB, default=dict)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DiagnosticAudit(Base):
+    __tablename__ = "diagnostic_audit"
+    __table_args__ = (Index("ix_diagnostic_audit_device_created", "device_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    boot_id: Mapped[str] = mapped_column(String(100))
+    session_id: Mapped[str | None] = mapped_column(String(100))
+    request_id: Mapped[str] = mapped_column(String(100), index=True)
+    record_type: Mapped[str] = mapped_column(String(30))
+    command: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(30))
+    actor: Mapped[str | None] = mapped_column(String(320))
+    parameters: Mapped[dict] = mapped_column(JSONB, default=dict)
+    result: Mapped[dict] = mapped_column(JSONB, default=dict)
+    message: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DiagnosticCapture(Base):
+    __tablename__ = "diagnostic_captures"
+    __table_args__ = (Index("ix_diagnostic_capture_device_created", "device_id", "created_at"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    device_id: Mapped[str] = mapped_column(ForeignKey("devices.id", ondelete="CASCADE"))
+    name: Mapped[str] = mapped_column(String(80))
+    snapshots: Mapped[list] = mapped_column(JSONB)
+    actions: Mapped[list] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class UserSession(Base):
     __tablename__ = "user_sessions"
 

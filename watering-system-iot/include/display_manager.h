@@ -14,6 +14,15 @@ class DisplayManager {
   void begin();
   void update(const WateringController &controller, bool wifiConnected,
               bool backendConnected, uint32_t now, bool force = false);
+  bool startTest(const char *pattern, uint32_t durationMs, const char *requestId,
+                 const char *sessionId, uint32_t now, const char *&error);
+  void cancelTest(uint32_t now, const char *reason);
+  bool consumeTestEvent(DebugActionEvent &event);
+  bool available() const;
+  uint8_t sdaPin() const;
+  uint8_t sclPin() const;
+  uint8_t address() const;
+  size_t scanI2c(uint8_t *addresses, size_t capacity);
 
  private:
   static constexpr int16_t WIDTH = 128;
@@ -28,6 +37,12 @@ class DisplayManager {
   bool hasFrame_ = false;
   uint32_t lastRefreshAt_ = 0;
   uint32_t lastFrameHash_ = 0;
+  bool testActive_ = false;
+  bool testEventPending_ = false;
+  uint32_t testStartedAt_ = 0;
+  uint32_t testDurationMs_ = 0;
+  DebugActionEvent testEvent_{};
+  void finishTest(const char *status, uint32_t now, const char *reason);
 
   void draw(const WateringController &controller, bool wifiConnected,
             bool backendConnected);

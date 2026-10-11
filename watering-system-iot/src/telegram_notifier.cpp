@@ -188,10 +188,11 @@ void TelegramNotifier::processSettingsCommands() {
 }
 
 void TelegramNotifier::enqueueWateringFaults() {
+  if (controller_.debugMode() == DebugMode::Simulation) return;
   if (!configured()) return;
   const uint32_t now = millis();
   for (size_t zone = 0; zone < ZONE_COUNT; ++zone) {
-    const ZoneState &state = controller_.zoneState(zone);
+    const ZoneState &state = controller_.liveZoneState(zone);
     if (state.fault != FaultCode::MaximumWateringReached ||
         alertedFaultGeneration_[zone] == state.recoveryGeneration ||
         !due(now, nextFaultAlertAt_[zone])) continue;
@@ -219,7 +220,11 @@ void TelegramNotifier::showRecoveryConfirmation(RecoveryReply &reply,
                                                 uint32_t now) {
   const TelegramRecoveryRequest &request = reply.command.request;
   const size_t zone = request.zoneId - 1;
-  const ZoneState &state = controller_.zoneState(zone);
+  if (controller_.automationHeld()) {
+    strlcpy(reply.text, "Diagnostics holds automation. End the diagnostic session and explicitly resume automation before reviewing channel recovery.", sizeof(reply.text));
+    return;
+  }
+  const ZoneState &state = controller_.liveZoneState(zone);
   const bool clear = request.action == TelegramRecoveryAction::ReviewClear;
   if (clear && state.fault != FaultCode::MaximumWateringReached) {
     strlcpy(reply.text, "This channel no longer has a watering-limit fault. Use /faults for its current state.", sizeof(reply.text));
@@ -295,10 +300,10 @@ void TelegramNotifier::processRecoveryCommands(uint32_t now) {
   if (request.action == TelegramRecoveryAction::Invalid) {
     strlcpy(reply.text, "Use /faults, /clearfault 1 through 4, or /resume 1 through 4. Recovery buttons must come from this controller's current messages.", sizeof(reply.text));
   } else if (request.action == TelegramRecoveryAction::List) {
-    size_t used = snprintf(reply.text, sizeof(reply.text), "Controller: %s\nCurrent faults and paused channels:\n", DEVICE_ID);
+    size_t used = snprintf(reply.text, sizeof(reply.text), "Controller: %s\nLive faults and paused channels (diagnostics simulation excluded):\n", DEVICE_ID);
     uint8_t count = 0;
     for (size_t zone = 0; zone < ZONE_COUNT && used < sizeof(reply.text); ++zone) {
-      const ZoneState &state = controller_.zoneState(zone);
+      const ZoneState &state = controller_.liveZoneState(zone);
       if (state.fault == FaultCode::None && !state.paused) continue;
       ++count;
       const int written = snprintf(reply.text + used, sizeof(reply.text) - used,
@@ -322,7 +327,7 @@ void TelegramNotifier::processRecoveryCommands(uint32_t now) {
              (command.callbackId[0] != '\0' && strcmp(request.bootId, bootId_.c_str()) != 0)) {
     strlcpy(reply.text, "This recovery button belongs to an earlier controller session. Use /faults for a fresh review.", sizeof(reply.text));
   } else {
-    const ZoneState &state = controller_.zoneState(request.zoneId - 1);
+    const ZoneState &state = controller_.liveZoneState(request.zoneId - 1);
     const bool review = request.action == TelegramRecoveryAction::ReviewClear ||
                         request.action == TelegramRecoveryAction::ReviewResume;
     if (review) {
@@ -386,7 +391,7 @@ void TelegramNotifier::processRecoveryCommands(uint32_t now) {
                      static_cast<long long>(command.updateId), static_cast<unsigned>(request.zoneId));
             if (clear) {
               strlcpy(reply.buttons[0].text, "Review Resume", sizeof(reply.buttons[0].text));
-              const ZoneState &pausedState = controller_.zoneState(request.zoneId - 1);
+              const ZoneState &pausedState = controller_.liveZoneState(request.zoneId - 1);
               if (telegramRecoveryCallback(reply.buttons[0].data, sizeof(reply.buttons[0].data), 'p',
                                             bootId_.c_str(), request.zoneId, pausedState.recoveryGeneration)) {
                 reply.buttonCount = 1;
@@ -497,18 +502,22 @@ bool TelegramNotifier::enqueueDebugReport(uint32_t now, const char *kind,
   const char *title = strcmp(kind, "manual_debug") == 0
                           ? "On-demand controller report"
                           : "Hourly controller report";
+  const bool simulation = controller_.debugMode() == DebugMode::Simulation;
+  const char *diagnostics = simulation ? "simulation; physical relays OFF; live readings before test" :
+      controller_.debugMode() == DebugMode::Hardware ? "hardware testing; automation held" :
+      controller_.automationHeld() ? "automation held; explicit resume required" : "observe";
   size_t used = snprintf(
       text, sizeof(text),
-      "%s\nController: %s\nUptime: %lu h\nWi-Fi: %d "
+      "%s\nController: %s\nDiagnostics: %s\nUptime: %lu h\nWi-Fi: %d "
       "dBm\nTank: %s\nAutomatic watering: %s\nActive zone: %d\n",
-      title, DEVICE_ID, static_cast<unsigned long>(now / 3600000UL), WiFi.RSSI(),
-      controller_.mainTankLow() ? "LOW" : "ready",
+      title, DEVICE_ID, diagnostics, static_cast<unsigned long>(now / 3600000UL), WiFi.RSSI(),
+      (simulation ? controller_.physicalTankLow() : controller_.mainTankLow()) ? "LOW" : "ready",
       controller_.config().automaticWateringEnabled ? "enabled" : "disabled",
-      controller_.activeZone() < 0 ? 0 : controller_.activeZone() + 1);
+      simulation || controller_.activeZone() < 0 ? 0 : controller_.activeZone() + 1);
 
   for (size_t zone = 0; zone < ZONE_COUNT && used < sizeof(text); ++zone) {
-    const SensorState &sensor = controller_.sensorState(zone);
-    const ZoneState &state = controller_.zoneState(zone);
+    const SensorState &sensor = controller_.liveSensorState(zone);
+    const ZoneState &state = controller_.liveZoneState(zone);
     const int written = snprintf(
         text + used, sizeof(text) - used, "Z%u: %u%%, %s%s%s%s\n",
         static_cast<unsigned>(zone + 1),

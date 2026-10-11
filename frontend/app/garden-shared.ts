@@ -1,4 +1,4 @@
-export type Me = { authenticated: boolean; authMode: 'development' | 'google'; email?: string; name?: string };
+export type Me = { authenticated: boolean; authMode: 'development' | 'google'; email?: string; name?: string; canControl?: boolean };
 export type Zone = {
   id: number; name?: string | null; thresholds?: {startWateringPercent: number; stopWateringPercent: number} | null; raw: number; filteredRaw: number; moisturePercent: number; sensorValid: boolean;
   phase: string; relayOn: boolean; wateringOnMsThisCycle: number; fault: string | null; lastWateredAt: string | null;

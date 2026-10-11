@@ -68,6 +68,10 @@ struct SystemConfig {
 };
 
 struct SensorState {
+  uint16_t physicalRaw;
+  uint16_t samples[16];
+  uint16_t minRaw;
+  uint16_t maxRaw;
   uint16_t latestRaw;
   uint16_t filteredRaw;
   uint8_t moisturePercent;
@@ -75,6 +79,18 @@ struct SensorState {
   uint8_t invalidSampleCount;
   uint32_t lastReadingAt;
   bool valid;
+};
+
+enum class DebugMode : uint8_t { Observe, Hardware, Simulation };
+
+struct DebugActionEvent {
+  char sessionId[37];
+  char requestId[65];
+  char command[32];
+  char status[12];
+  char message[96];
+  uint32_t uptimeMs;
+  uint8_t zoneId;
 };
 
 struct ZoneState {
