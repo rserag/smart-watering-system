@@ -32,6 +32,7 @@ enum class ZonePhase : uint8_t {
   ManualWatering,
   Soaking,
   Cooldown,
+  Paused,
   Fault,
 };
 
@@ -81,6 +82,8 @@ struct ZoneState {
   FaultCode fault;
   bool relayOn;
   bool manualRequest;
+  bool paused;
+  uint32_t recoveryGeneration;
   uint8_t consecutiveDryReadings;
   uint8_t consecutiveWetReadings;
   uint32_t phaseStartedAt;

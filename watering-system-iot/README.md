@@ -341,7 +341,9 @@ Other supported commands are:
 
 - `zone.stop` with `zoneId`.
 - `system.stopAll`, which latches all zones in emergency-stop fault state.
-- `fault.clear` with `zoneId`.
+- `fault.clearPaused` and `zone.resume` with `zoneId`, `expectedBootId`,
+  `expectedRecoveryGeneration`, and `expiresAtEpoch` (within the next 60 seconds).
+  `fault.clear` is rejected so older clients cannot bypass the confirmed pause.
 - `telemetry.request`.
 - `config.get`.
 - `telegram.debug.set` with boolean `enabled`.
@@ -351,6 +353,40 @@ Other supported commands are:
 The device remembers a bounded set of recent request IDs to avoid executing an
 immediate duplicate command. Expiration prevents an old watering command from
 being replayed after a reboot.
+
+### Durable channel recovery (firmware 0.7.0)
+
+`fault.clearPaused` clears only the current `maximum_watering_reached` occurrence
+and saves a channel pause before releasing the fault. Paused channels cannot
+water automatically or manually. The pause is stored independently of watering
+configuration and survives reboot, configuration updates, Stop, and tank-level
+transitions. Missing pause records mean no channels paused; corrupt or unreadable
+records keep all channels paused until an explicit successful recovery.
+
+`zone.resume` requires the expected occurrence generation, an enabled paused
+channel with no active fault, and a ready tank. It saves the released pause and
+then enters `stabilizing`: all validation and wet/dry counters reset, and three
+fresh valid samples are required before automatic or manual watering is eligible.
+Commands for an old boot, generation or expired confirmation are rejected.
+Duplicate command IDs replay their original outcome without repeating recovery.
+
+Telemetry adds `paused` and `recoveryGeneration` to each zone. The OLED reports
+`PAUSED`. The dashboard consumes these fields and requires firmware 0.7.0.
+
+The direct Telegram bot adds audible watering-limit alerts independently of
+debug, `/faults`, `/clearfault N` and `/resume N`. Commands open confirmations;
+they never actuate immediately. Actor-bound confirmation nonces expire after
+60 seconds. Completed buttons are removed; stale/replayed callbacks cannot
+clear a later fault or resume another pause. Private-chat recovery requires the
+configured numeric owner. Group recovery requires a numeric
+`TELEGRAM_OPERATOR_USER_ID` macro in `secrets.h` (empty by default), in addition
+to the chat allowlist. Only the main controller task performs clear/resume.
+
+Recovery notifications use `maximum_watering_fault`, `fault_cleared_paused` and
+`channel_resumed` delivery kinds. Recovery result request IDs include the
+Telegram actor, update ID and channel for the persisted interaction history.
+Telegram changes reach the dashboard through state telemetry when connected.
+Dashboard command expiry uses the NTP clock even when Telegram is disabled.
 
 ## Telemetry
 
@@ -387,4 +423,7 @@ host without hardware:
 ```sh
 c++ -std=c++11 -Wall -Wextra -Werror -Iinclude tests/telegram_settings_test.cpp -o /tmp/telegram-settings-test
 /tmp/telegram-settings-test
+c++ -std=c++11 -Wall -Wextra -Werror -Iinclude tests/telegram_recovery_test.cpp -o /tmp/telegram-recovery-test
+/tmp/telegram-recovery-test
+sh tests/run_controller_recovery_tests.sh
 ```

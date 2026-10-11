@@ -132,6 +132,45 @@ numeric destination chat ID: the ESP32 polls its updates, so the bot must not
 have a webhook or another update consumer. Only the configured chat can change
 this preference.
 
+### Clear a watering-limit fault and keep the channel paused
+
+Firmware **0.7.0** adds recovery in **Overview → zone details**. Choose
+**Clear fault**, review the affected channel, then **Clear and keep paused**.
+The dashboard waits for controller acknowledgment and fresh state before
+confirming recovery. Both automatic and manual watering remain blocked for
+that channel. The pause survives ESP32 restarts and watering configuration
+updates; other channels continue normally.
+
+When the water supply, tubing and sensor are ready, choose **Resume watering**
+and confirm separately. The controller requires three fresh valid sensor
+samples before watering can start. Resume is unavailable while the tank is low
+or the channel is disabled. Recovery actions require an online controller with
+recent readings and expire rather than waiting for reconnection.
+
+The Telegram bot sends watering-limit alerts independently of debug settings.
+Use **Review recovery** in the alert, `/faults`, or `/clearfault 2` to open the
+same clear-and-pause confirmation for Channel 2. After clearing, **Review
+Resume** or `/resume 2` opens a separate Resume confirmation. Telegram recovery
+continues to work if the dashboard server is unavailable. Confirmations expire
+after 60 seconds and old buttons cannot act on a new fault or controller boot.
+
+In a private Telegram destination, only its numeric user ID can recover a
+channel. Group destinations require an explicit numeric operator in
+`watering-system-iot/include/secrets.h`:
+
+```cpp
+#define TELEGRAM_OPERATOR_USER_ID "123456789"
+```
+
+The operator must also be in the configured chat. Hourly sound preferences
+retain their existing chat-level permissions. Recovery outcomes appear in the
+dashboard's Telegram interaction history after the controller connects.
+
+The authenticated `POST /api/devices/{id}/zones/{zone_id}/recovery` endpoint
+accepts `action` (`clear` or `resume`), `expectedBootId` and
+`expectedRecoveryGeneration` from current telemetry. The older generic
+`fault.clear` command is rejected; recovery is never queued for later delivery.
+
 ## Dashboard data
 
 The overview puts zones first, with controller diagnostics and Telegram under

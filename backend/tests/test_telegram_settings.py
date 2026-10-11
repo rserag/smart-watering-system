@@ -112,7 +112,9 @@ def test_firmware_support(firmware, supported):
 def test_dashboard_uses_device_report_and_defaults_legacy_devices_to_sound(payload, expected):
     session = AsyncMock()
     latest = MagicMock()
-    latest.scalar_one_or_none.return_value = None if payload is None else SimpleNamespace(id=1, wifi_rssi=-60, payload=payload)
+    latest.scalar_one_or_none.return_value = None if payload is None else SimpleNamespace(
+        id=1, wifi_rssi=-60, payload=payload, received_at=datetime.now(timezone.utc), boot_id="boot-1",
+    )
     empty = MagicMock()
     empty.scalars.return_value = []
     session.execute.side_effect = [latest, empty, empty]

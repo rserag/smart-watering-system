@@ -1,11 +1,13 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { type Zone, fetchJson, formatTime, zoneName } from './garden-shared';
+import { type Device, type Zone, fetchJson, formatTime, zoneName } from './garden-shared';
 import PulseSettings from './pulse-settings';
+import ZoneRecovery from './zone-recovery';
 
-export default function ZoneDetails({ deviceId, zone, online, onSaved, onHistory }: {
+export default function ZoneDetails({ deviceId, device, zone, online, now, onSnapshot, onSaved, onHistory }: {
   deviceId: string; zone: Zone; online: boolean;
+  device: Device; now: number; onSnapshot: (device: Device) => boolean;
   onSaved: (deviceId: string, zoneId: number, name: string | null) => void;
   onHistory: () => void;
 }) {
@@ -59,6 +61,7 @@ export default function ZoneDetails({ deviceId, zone, online, onSaved, onHistory
       <div><dt>Last watered</dt><dd>{zone.lastWateredAt ? formatTime(zone.lastWateredAt) : 'No recorded watering'}</dd></div>
       <div><dt>Fault</dt><dd>{zone.fault ?? 'None'}</dd></div>
     </dl>
+    <ZoneRecovery device={{...device, online}} zone={zone} now={now} onSnapshot={onSnapshot} />
     <PulseSettings deviceId={deviceId} zoneId={zone.id} online={online} />
   </section>;
 }

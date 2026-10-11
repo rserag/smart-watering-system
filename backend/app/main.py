@@ -37,6 +37,13 @@ from app.models import (
 )
 from app.zone_settings import ZoneNameRequest, legacy_zone_names_query, save_zone_name_query
 from app.telegram_settings import HourlySilentRequest, configure_hourly_silent, supports_hourly_silent
+from app.recovery import (
+    RECOVERY_COMMANDS,
+    UNSAFE_QUEUED_RECOVERY_COMMANDS,
+    RecoveryRequest,
+    recover_zone,
+    supports_paused_recovery,
+)
 from app.protocol import (
     CommandAck,
     CommandRequest,
@@ -128,6 +135,7 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
         "telegramLastFailureStage": None,
     }
     if latest is not None:
+        recovery_states = {zone["id"]: zone for zone in latest.payload.get("zones", [])}
         wifi_rssi = latest.wifi_rssi
         telegram_status = {
             "directTelegram": bool(latest.payload.get("directTelegram", False)),
@@ -164,6 +172,8 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
                     "relayOn": zone.relay_on,
                     "wateringOnMsThisCycle": zone.watering_on_ms_this_cycle,
                     "fault": zone.fault,
+                    "paused": recovery_states.get(zone.zone_id, {}).get("paused", False),
+                    "recoveryGeneration": recovery_states.get(zone.zone_id, {}).get("recoveryGeneration", 0),
                     "lastWateredAt": event.started_at.isoformat() if event else None,
                 }
             )
@@ -178,6 +188,9 @@ async def latest_snapshot(session: AsyncSession, device: Device) -> dict[str, An
         "configRevision": device.config_revision,
         "automaticWateringEnabled": device.automatic_watering_enabled,
         "lastSeenAt": device.last_seen_at.isoformat(),
+        "telemetryReceivedAt": latest.received_at.isoformat() if latest is not None else None,
+        "telemetryBootId": latest.boot_id if latest is not None else None,
+        "telemetryId": latest.id if latest is not None else None,
         "wifiRssi": wifi_rssi,
         "mainTankLow": tank_state.is_low if tank_state is not None else None,
         "mainTankLastChangedAt": tank_state.last_changed_at.isoformat() if tank_state is not None else None,
@@ -417,11 +430,11 @@ async def export_history(
 
 def command_wire_message(command: Command) -> dict[str, Any]:
     payload = {
+        **command.parameters,
         "type": command.command,
         "schemaVersion": 1,
         "deviceId": command.device_id,
         "requestId": command.id,
-        **command.parameters,
     }
     if command.command in {"zone.water", "telegram.debug.send"} and "expiresAtEpoch" not in payload:
         payload["expiresAtEpoch"] = int(utcnow().timestamp()) + 60
@@ -448,6 +461,8 @@ async def create_command(
     device = await session.get(Device, device_id)
     if device is None:
         raise HTTPException(status_code=404, detail="Unknown device")
+    if request.command == "fault.clear":
+        raise HTTPException(409, "Use channel recovery to clear a fault and keep the channel paused.")
     command = Command(id=str(uuid4()), device_id=device_id, command=request.command, parameters=request.parameters, status="queued")
     if request.command == "telegram.hourlySilent.set" and not supports_hourly_silent(device.firmware_version):
         raise HTTPException(409, "Firmware 0.6.0 or newer is required for silent hourly updates")
@@ -458,6 +473,25 @@ async def create_command(
         command.sent_at = utcnow()
         await session.commit()
     return {"commandId": command.id, "status": command.status}
+
+
+@app.post("/api/devices/{device_id}/zones/{zone_id}/recovery")
+async def recover_channel(
+    device_id: str,
+    zone_id: Annotated[int, Path(ge=1, le=16)],
+    request: RecoveryRequest,
+    user: Annotated[UserSession, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> dict[str, Any]:
+    device = await session.get(Device, device_id)
+    if device is None:
+        raise HTTPException(404, "Unknown device")
+    if not supports_paused_recovery(device.firmware_version):
+        raise HTTPException(409, "Firmware 0.7.0 or newer is required to clear and keep paused.")
+    if device_id not in await device_hub.connected_ids():
+        raise HTTPException(409, "Controller is offline. Recovery is available only while connected.")
+    latest = (await session.execute(latest_telemetry_query(device_id))).scalar_one_or_none()
+    return await recover_zone(session, device, latest, zone_id, request, user, utcnow())
 
 
 @app.patch("/api/devices/{device_id}/telegram/hourly-silent")
@@ -517,6 +551,10 @@ async def deliver_queued_commands(device_id: str) -> None:
             select(Command).where(Command.device_id == device_id, Command.status == "queued").order_by(Command.created_at)
         )
         for command in result.scalars():
+            if command.command in UNSAFE_QUEUED_RECOVERY_COMMANDS:
+                command.status = "failed"
+                command.result = "Recovery cannot be delivered after reconnecting. Review current channel state and try again."
+                continue
             if not await device_hub.send(device_id, command_wire_message(command)):
                 break
             command.status = "sent"
@@ -681,7 +719,12 @@ async def record_telemetry(message: TelemetryMessage) -> dict[str, Any] | None:
 async def record_command_ack(device_id: str, message: CommandAck) -> None:
     async with SessionLocal() as session:
         command = await session.get(Command, message.request_id)
-        if command is None or command.device_id != device_id:
+        if command is None or command.device_id != device_id or message.device_id != device_id or message.command != command.command:
+            return
+        if command.command in RECOVERY_COMMANDS:
+            # The waiting recovery request validates and saves its own outcome.
+            # A later duplicate ACK must never turn a rejected or uncertain
+            # recovery into a confirmed one.
             return
         command.status = "acknowledged" if message.status in {"accepted", "duplicate"} else "rejected"
         command.result = message.message

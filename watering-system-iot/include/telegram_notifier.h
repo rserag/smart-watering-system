@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include "config_store.h"
 #include "telegram_settings.h"
+#include "telegram_recovery.h"
 
 #include "watering_controller.h"
 
@@ -53,9 +54,16 @@ class TelegramNotifier {
  private:
   static constexpr uint32_t DEBUG_INTERVAL_MS = 3600000;
   static constexpr size_t MESSAGE_BYTES = 768;
-  static constexpr uint8_t CRITICAL_QUEUE_LENGTH = 4;
+  static constexpr uint8_t CRITICAL_QUEUE_LENGTH = 8;
   static constexpr uint8_t STANDARD_QUEUE_LENGTH = 12;
   static constexpr uint8_t AUDIT_LENGTH = 16;
+  static constexpr uint32_t RECOVERY_CONFIRMATION_MS = 60000;
+  static constexpr uint8_t RECOVERY_CONFIRMATION_COUNT = 8;
+
+  struct RecoveryButton {
+    char text[32];
+    char data[65];
+  };
 
   struct NotificationJob {
     char eventId[48];
@@ -66,6 +74,7 @@ class TelegramNotifier {
     uint8_t attempts;
     uint32_t updateSequence;
     uint32_t nextAttemptAt;
+    RecoveryButton recoveryButton;
   };
 
   struct SendResult {
@@ -89,10 +98,33 @@ class TelegramNotifier {
     bool debugEnabled;
   };
 
+  struct RecoveryCommand {
+    int64_t updateId;
+    int64_t actorId;
+    int64_t messageId;
+    char callbackId[128];
+    TelegramRecoveryRequest request;
+  };
+
+  struct RecoveryReply {
+    RecoveryCommand command;
+    char text[MESSAGE_BYTES];
+    char acknowledgement[128];
+    RecoveryButton buttons[ZONE_COUNT];
+    uint8_t buttonCount;
+    bool removeButtons;
+  };
+
+  // Owned exclusively by the main task. Consuming before a controller mutation
+  // makes duplicate callbacks harmless even if Telegram redelivers an update.
+  using RecoveryConfirmation = TelegramRecoveryConfirmation;
+
   WateringController &controller_;
   ConfigStore &configStore_;
   QueueHandle_t settingsCommands_ = nullptr;
   QueueHandle_t settingsReplies_ = nullptr;
+  QueueHandle_t recoveryCommands_ = nullptr;
+  QueueHandle_t recoveryReplies_ = nullptr;
   QueueHandle_t criticalQueue_ = nullptr;
   QueueHandle_t standardQueue_ = nullptr;
   TaskHandle_t workerTask_ = nullptr;
@@ -102,6 +134,11 @@ class TelegramNotifier {
   bool settingsChanged_ = false;
   int64_t nextUpdateId_ = 0;
   bool settingsPending_ = false;
+  bool recoveryPending_ = false;
+  RecoveryConfirmation confirmations_[RECOVERY_CONFIRMATION_COUNT]{};
+  uint8_t nextConfirmation_ = 0;
+  uint32_t alertedFaultGeneration_[ZONE_COUNT]{};
+  uint32_t nextFaultAlertAt_[ZONE_COUNT]{};
   uint32_t nextPollAt_ = 0;
   bool timeSyncStarted_ = false;
   bool workerRunning_ = false;
@@ -119,14 +156,21 @@ class TelegramNotifier {
   bool enqueueDebugReport(uint32_t now, const char *kind,
                           const char *requestId = nullptr);
   bool enqueue(QueueHandle_t queue, const char *kind, const char *text,
-               const char *requestId = nullptr);
+               const char *requestId = nullptr,
+               const RecoveryButton *button = nullptr);
   SendResult sendMessage(const char *text, bool silent = false,
-                         bool settingsButtons = false);
+                         bool settingsButtons = false,
+                         const RecoveryButton *buttons = nullptr,
+                         uint8_t buttonCount = 0);
   SendResult callTelegram(const char *method, JsonDocument &request,
                           JsonDocument &response);
   void pollSettings();
   void processSettingsCommands();
   void sendSettingsReply(const SettingsReply &reply);
+  void processRecoveryCommands(uint32_t now);
+  void sendRecoveryReply(const RecoveryReply &reply);
+  void enqueueWateringFaults();
+  void showRecoveryConfirmation(RecoveryReply &reply, uint32_t now);
   void rememberUpdate(int64_t updateId);
   bool telegramReady() const;
   String nextEventId();

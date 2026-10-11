@@ -32,7 +32,7 @@ void setup() {
   Serial.begin(115200);
 
   systemConfig = watering::makeDefaultConfig();
-  controller.begin(systemConfig);
+  controller.begin(systemConfig, &configStore);
 
   watering::SystemConfig savedConfig;
   if (configStore.load(savedConfig)) {

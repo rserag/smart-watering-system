@@ -7,6 +7,8 @@
 
 namespace watering {
 
+class ConfigStore;
+
 struct PumpStartEvent {
   uint8_t zoneId;
   bool manual;
@@ -20,7 +22,7 @@ class WateringController {
                      const uint8_t (&sensorPins)[ZONE_COUNT],
                      uint8_t mainTankLevelPin);
 
-  void begin(const SystemConfig &config);
+  void begin(const SystemConfig &config, ConfigStore *store = nullptr);
   void loop(uint32_t now);
   void applyConfig(const SystemConfig &config, uint32_t now);
   void prepareForConfigUpdate(uint32_t now);
@@ -30,6 +32,10 @@ class WateringController {
   bool stopZone(size_t zone, uint32_t now, const char *&error);
   void emergencyStop(uint32_t now);
   bool clearFault(size_t zone, uint32_t now, const char *&error);
+  bool clearFaultAndPause(size_t zone, uint32_t expectedGeneration,
+                         uint32_t now, const char *&error);
+  bool resumeZone(size_t zone, uint32_t expectedGeneration, uint32_t now,
+                  const char *&error);
 
   const SensorState &sensorState(size_t zone) const;
   const ZoneState &zoneState(size_t zone) const;
@@ -53,6 +59,8 @@ class WateringController {
   SystemConfig config_{};
   SensorState sensors_[ZONE_COUNT]{};
   ZoneState zones_[ZONE_COUNT]{};
+  ConfigStore *configStore_ = nullptr;
+  uint8_t pausedZones_ = 0;
 
   uint32_t lastSampleAt_ = 0;
   bool hasSampled_ = false;
@@ -85,6 +93,9 @@ class WateringController {
   void setPhase(size_t zone, ZonePhase phase, uint32_t now,
                 FaultCode fault = FaultCode::None);
   void markFault(size_t zone, FaultCode fault, uint32_t now);
+  void invalidateRecovery(size_t zone);
+  void resetSensorValidation(size_t zone);
+  ZonePhase idlePhase(size_t zone) const;
   void resetRuntimeState(uint32_t now);
 };
 

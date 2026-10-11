@@ -11,11 +11,21 @@ constexpr char STORAGE_NAMESPACE[] = "watering";
 constexpr char STORAGE_KEY[] = "config";
 constexpr char TELEGRAM_DEBUG_KEY[] = "tg_debug";
 constexpr char TELEGRAM_HOURLY_SILENT_KEY[] = "tg_hr_silent";
+constexpr char PAUSED_ZONES_KEY[] = "paused_zones";
+constexpr uint32_t PAUSED_ZONES_MAGIC = 0x50415553;  // "PAUS"
+constexpr uint8_t VALID_PAUSED_ZONES_MASK = (1u << ZONE_COUNT) - 1u;
 
 struct StoredConfig {
   uint32_t magic;
   uint16_t recordSize;
   SystemConfig config;
+  uint32_t checksum;
+};
+
+struct StoredPausedZones {
+  uint32_t magic;
+  uint8_t mask;
+  uint8_t reserved[3];
   uint32_t checksum;
 };
 
@@ -73,6 +83,55 @@ bool ConfigStore::save(const SystemConfig &config) {
   }
   const size_t bytesWritten =
       preferences.putBytes(STORAGE_KEY, &stored, sizeof(stored));
+  preferences.end();
+  return bytesWritten == sizeof(stored);
+}
+
+bool ConfigStore::loadPausedZones(uint8_t &mask) {
+  Preferences preferences;
+  // Opening read/write creates the namespace on the first boot, allowing a
+  // missing pause record to be distinguished from inaccessible storage.
+  if (!preferences.begin(STORAGE_NAMESPACE, false)) {
+    return false;
+  }
+  if (!preferences.isKey(PAUSED_ZONES_KEY)) {
+    preferences.end();
+    mask = 0;
+    return true;
+  }
+
+  StoredPausedZones stored{};
+  const size_t length = preferences.getBytesLength(PAUSED_ZONES_KEY);
+  const size_t bytesRead = length == sizeof(stored)
+                               ? preferences.getBytes(PAUSED_ZONES_KEY, &stored,
+                                                      sizeof(stored))
+                               : 0;
+  preferences.end();
+  if (bytesRead != sizeof(stored) || stored.magic != PAUSED_ZONES_MAGIC ||
+      (stored.mask & ~VALID_PAUSED_ZONES_MASK) != 0 ||
+      stored.checksum != checksum(reinterpret_cast<const uint8_t *>(&stored),
+                                  offsetof(StoredPausedZones, checksum))) {
+    return false;
+  }
+  mask = stored.mask;
+  return true;
+}
+
+bool ConfigStore::savePausedZones(uint8_t mask) {
+  if ((mask & ~VALID_PAUSED_ZONES_MASK) != 0) {
+    return false;
+  }
+  StoredPausedZones stored{};
+  stored.magic = PAUSED_ZONES_MAGIC;
+  stored.mask = mask;
+  stored.checksum = checksum(reinterpret_cast<const uint8_t *>(&stored),
+                             offsetof(StoredPausedZones, checksum));
+  Preferences preferences;
+  if (!preferences.begin(STORAGE_NAMESPACE, false)) {
+    return false;
+  }
+  const size_t bytesWritten =
+      preferences.putBytes(PAUSED_ZONES_KEY, &stored, sizeof(stored));
   preferences.end();
   return bytesWritten == sizeof(stored);
 }

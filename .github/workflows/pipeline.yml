@@ -86,6 +86,11 @@ jobs:
         run: |
           c++ -std=c++11 -Wall -Wextra -Werror -Iinclude tests/telegram_settings_test.cpp -o "$RUNNER_TEMP/telegram-settings-test"
           "$RUNNER_TEMP/telegram-settings-test"
+          c++ -std=c++11 -Wall -Wextra -Werror -Iinclude tests/telegram_recovery_test.cpp -o "$RUNNER_TEMP/telegram-recovery-test"
+          "$RUNNER_TEMP/telegram-recovery-test"
+        working-directory: watering-system-iot
+      - name: Check durable channel recovery and relay interlocks
+        run: sh tests/run_controller_recovery_tests.sh
         working-directory: watering-system-iot
       - name: Build with non-secret example configuration
         run: |

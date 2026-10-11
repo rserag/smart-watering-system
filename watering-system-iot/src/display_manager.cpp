@@ -127,6 +127,8 @@ const char *DisplayManager::zoneStatus(const ZoneState &state) {
       return "SOAKING";
     case ZonePhase::Cooldown:
       return "COOLDOWN";
+    case ZonePhase::Paused:
+      return "PAUSED";
     case ZonePhase::Fault:
       switch (state.fault) {
         case FaultCode::SensorInvalid:

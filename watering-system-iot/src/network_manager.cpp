@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 #include <esp_system.h>
+#include <time.h>
 
 #include "firmware_info.h"
 #include "secrets.h"
@@ -35,9 +36,9 @@ NetworkManager::NetworkManager(WateringController &controller,
 void NetworkManager::begin() {
   const uint64_t chipId = ESP.getEfuseMac();
   char bootId[24];
-  snprintf(bootId, sizeof(bootId), "%08lx-%04x",
+  snprintf(bootId, sizeof(bootId), "%08lx-%08lx",
            static_cast<unsigned long>(chipId & 0xFFFFFFFF),
-           static_cast<unsigned>(esp_random() & 0xFFFF));
+           static_cast<unsigned long>(esp_random()));
   bootId_ = bootId;
   telegram_.setBootId(bootId_);
 
@@ -108,6 +109,9 @@ void NetworkManager::handleWifi(uint32_t now) {
     wifiRetryMs_ = WIFI_RETRY_MIN_MS;
     Serial.print("Wi-Fi connected. IP address: ");
     Serial.println(WiFi.localIP());
+    // Expiring dashboard recovery commands require a clock even when Telegram
+    // credentials are absent. Synchronization runs asynchronously.
+    configTime(0, 0, "pool.ntp.org", "time.google.com", "time.cloudflare.com");
 
     return;
   }
@@ -237,6 +241,8 @@ void NetworkManager::handleIncomingText(const uint8_t *payload, size_t length) {
              strcmp(type, "zone.stop") == 0 ||
              strcmp(type, "system.stopAll") == 0 ||
              strcmp(type, "fault.clear") == 0 ||
+             strcmp(type, "fault.clearPaused") == 0 ||
+             strcmp(type, "zone.resume") == 0 ||
              strcmp(type, "telegram.debug.set") == 0 ||
              strcmp(type, "telegram.hourlySilent.set") == 0 ||
              strcmp(type, "telegram.debug.send") == 0 ||
@@ -385,8 +391,13 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
     Serial.println("Rejected command without requestId");
     return;
   }
-  if (isDuplicateRequest(requestId)) {
-    sendCommandAck(requestId, type, "duplicate");
+  if (const RecentCommand *previous = recentCommand(requestId)) {
+    if (previous->command != type) {
+      sendCommandAck(requestId, type, "rejected", "requestId belongs to another command");
+      return;
+    }
+    sendCommandAck(requestId, type, previous->accepted ? "accepted" : "rejected",
+                   previous->error.isEmpty() ? nullptr : previous->error.c_str());
     return;
   }
 
@@ -463,31 +474,58 @@ void NetworkManager::handleCommand(JsonObjectConst root, const char *type) {
     } else if (strcmp(type, "zone.stop") == 0) {
       success = controller_.stopZone(zoneId - 1, millis(), error);
     } else if (strcmp(type, "fault.clear") == 0) {
-      success = controller_.clearFault(zoneId - 1, millis(), error);
+      error = "use fault.clearPaused with the current recovery confirmation";
+    } else if (strcmp(type, "fault.clearPaused") == 0 ||
+               strcmp(type, "zone.resume") == 0) {
+      const time_t currentTime = time(nullptr);
+      const uint32_t expiresAt = root["expiresAtEpoch"] | 0;
+      if (!root["expectedBootId"].is<const char *>() ||
+          bootId_ != root["expectedBootId"].as<const char *>()) {
+        error = "controller restarted; review the current channel state";
+      } else if (currentTime < 1700000000 ||
+                 !root["expiresAtEpoch"].is<uint32_t>() ||
+                 expiresAt <= static_cast<uint32_t>(currentTime) ||
+                 expiresAt - static_cast<uint32_t>(currentTime) > 60) {
+        error = "recovery confirmation expired; review the current channel state";
+      } else if (!root["expectedRecoveryGeneration"].is<uint32_t>()) {
+        error = "expectedRecoveryGeneration is required";
+      } else {
+        const uint32_t generation = root["expectedRecoveryGeneration"].as<uint32_t>();
+        success = strcmp(type, "fault.clearPaused") == 0
+                      ? controller_.clearFaultAndPause(zoneId - 1, generation, millis(), error)
+                      : controller_.resumeZone(zoneId - 1, generation, millis(), error);
+      }
     }
   }
 
-  rememberRequest(requestId);
+  rememberRequest(requestId, type, success, error);
   if (success && strcmp(type, "telegram.debug.send") == 0) {
     return;
   }
   sendCommandAck(requestId, type, success ? "accepted" : "rejected", error);
-  if (success && strcmp(type, "telegram.debug.set") == 0) {
+  if (success && (strcmp(type, "telegram.debug.set") == 0 ||
+                  strcmp(type, "fault.clearPaused") == 0 ||
+                  strcmp(type, "zone.resume") == 0)) {
     sendTelemetry(millis());
   }
 }
 
-bool NetworkManager::isDuplicateRequest(const String &requestId) const {
-  for (const String &recent : recentRequestIds_) {
-    if (!recent.isEmpty() && recent == requestId) {
-      return true;
+const NetworkManager::RecentCommand *NetworkManager::recentCommand(const String &requestId) const {
+  for (const RecentCommand &recent : recentCommands_) {
+    if (!recent.requestId.isEmpty() && recent.requestId == requestId) {
+      return &recent;
     }
   }
-  return false;
+  return nullptr;
 }
 
-void NetworkManager::rememberRequest(const String &requestId) {
-  recentRequestIds_[nextRequestSlot_] = requestId;
+void NetworkManager::rememberRequest(const String &requestId, const char *command,
+                                     bool accepted, const char *error) {
+  RecentCommand &recent = recentCommands_[nextRequestSlot_];
+  recent.requestId = requestId;
+  recent.command = command;
+  recent.accepted = accepted;
+  recent.error = error == nullptr ? "" : error;
   nextRequestSlot_ = (nextRequestSlot_ + 1) % RECENT_REQUEST_COUNT;
 }
 
@@ -551,6 +589,8 @@ void NetworkManager::sendTelemetry(uint32_t now) {
     item["relativeMoisturePercent"] = sensor.moisturePercent;
     item["sensorValid"] = sensor.valid;
     item["phase"] = zonePhaseName(state.phase);
+    item["paused"] = state.paused;
+    item["recoveryGeneration"] = state.recoveryGeneration;
     item["relayOn"] = state.relayOn;
     item["wateringOnMsThisCycle"] = state.wateringOnMsThisCycle;
     if (state.fault == FaultCode::None) {

@@ -2,10 +2,12 @@ export type Me = { authenticated: boolean; authMode: 'development' | 'google'; e
 export type Zone = {
   id: number; name?: string | null; thresholds?: {startWateringPercent: number; stopWateringPercent: number} | null; raw: number; filteredRaw: number; moisturePercent: number; sensorValid: boolean;
   phase: string; relayOn: boolean; wateringOnMsThisCycle: number; fault: string | null; lastWateredAt: string | null;
+  paused?: boolean; recoveryGeneration?: number;
 };
 export type Device = {
   id: string; online: boolean; firmwareVersion: string | null; bootId: string | null; schemaVersion: number;
   configRevision: number; automaticWateringEnabled: boolean; lastSeenAt: string; wifiRssi: number | null;
+  telemetryReceivedAt?: string | null; telemetryBootId?: string | null; telemetryId?: number | null;
   mainTankLow: boolean | null; mainTankLastChangedAt: string | null; zones: Zone[];
   directTelegram: boolean; telegramDebugEnabled: boolean; telegramConfigured: boolean;
   telegramHourlySilent: boolean;
@@ -22,7 +24,13 @@ export type TelegramDelivery = {
 };
 
 export function telegramKind(value: string) {
-  return ({ manual_debug: 'Manual debug', hourly_debug: 'Hourly debug', pump_started: 'Pump started', tank_low: 'Tank low', tank_restored: 'Tank restored' } as Record<string, string>)[value] ?? value;
+  return ({ manual_debug: 'Manual debug', hourly_debug: 'Hourly debug', pump_started: 'Pump started', tank_low: 'Tank low', tank_restored: 'Tank restored', maximum_watering_fault: 'Watering limit reached', fault_cleared_paused: 'Fault cleared; channel paused', channel_resumed: 'Channel resumed' } as Record<string, string>)[value] ?? value;
+}
+
+export function supportsPausedRecovery(value: string | null) {
+  if (!value || !/^\d+\.\d+\.\d+$/.test(value)) return false;
+  const [major, minor] = value.split('.').map(Number);
+  return major > 0 || minor >= 7;
 }
 
 export function telegramIssue(value: string) {
