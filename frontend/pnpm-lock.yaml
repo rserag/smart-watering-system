@@ -47,7 +47,7 @@ importers:
         version: 6.1.0(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
       '@vitejs/plugin-rsc':
         specifier: 0.5.34
-        version: 0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
+        version: 0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
       eslint:
         specifier: 9.39.4
         version: 9.39.4(jiti@2.7.0)(supports-color@10.2.2)
@@ -55,8 +55,8 @@ importers:
         specifier: 16.3.2
         version: 16.3.2(@typescript-eslint/parser@8.68.0(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3))(eslint@9.39.4(jiti@2.7.0)(supports-color@10.2.2))(supports-color@10.2.2)(typescript@5.9.3)
       react-server-dom-webpack:
-        specifier: 19.2.8
-        version: 19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26))
+        specifier: 19.2.9
+        version: 19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26))
       tailwindcss:
         specifier: 4.3.3
         version: 4.3.3
@@ -65,7 +65,7 @@ importers:
         version: 5.9.3
       vinext:
         specifier: 1.0.0-beta.3
-        version: 1.0.0-beta.3(@vitejs/plugin-react@6.1.0(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(@vitejs/plugin-rsc@0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(next@16.3.6(@babel/core@7.29.7(supports-color@10.2.2))(@playwright/test@1.63.0)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
+        version: 1.0.0-beta.3(@vitejs/plugin-react@6.1.0(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(@vitejs/plugin-rsc@0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(next@16.3.6(@babel/core@7.29.7(supports-color@10.2.2))(@playwright/test@1.63.0)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
       vite:
         specifier: 8.2.2
         version: 8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)
@@ -1411,11 +1411,6 @@ packages:
 
   ajv-formats@2.1.1:
     resolution: {integrity: sha512-Wx0Kx52hxE7C18hkMEggYlEifqWZtYaRgouJor+WMdPnQyEK13vgEWyVNup7SoeeoLMsr4kf5h6dOW11I15MUA==}
-    peerDependencies:
-      ajv: ^8.0.0
-    peerDependenciesMeta:
-      ajv:
-        optional: true
 
   ajv-keywords@5.1.0:
     resolution: {integrity: sha512-YCS/JNFAUyr5vAuhk1DWm1CBxRHW9LbJ2ozWeemrIqpbsqKjHVxYPyi5GC0rjZIT5JxJ3virVTS8wk4i/Z+krw==}
@@ -2668,12 +2663,12 @@ packages:
   react-is@16.13.1:
     resolution: {integrity: sha512-24e6ynE2H+OKt4kqsOvNd8kBpV65zoxbA4BVsEOB3ARVWQki/DHzaUoC5KuON/BiccDaCCTZBuOcfZs70kR8bQ==}
 
-  react-server-dom-webpack@19.2.8:
-    resolution: {integrity: sha512-rFO1VJZ+cH9ZH6hGy9+qmIsmZHZpCMKJZXhWHqT71UnSfg+w+W+gwrwp58MVzMqdFquG8GF1c6C8q0OGphkEdg==}
+  react-server-dom-webpack@19.2.9:
+    resolution: {integrity: sha512-7vhLc+COcttZsIsZa5qbT4Qn3Flp2fCadhuGRKpwE3ahmbu21hOnPFKwziNHZj8Fqtfcbs7pTJV69QA5GcUpbw==}
     engines: {node: '>=0.10.0'}
     peerDependencies:
-      react: ^19.2.8
-      react-dom: ^19.2.8
+      react: ^19.2.9
+      react-dom: ^19.2.9
       webpack: ^5.59.0
 
   react@19.2.8:
@@ -4131,7 +4126,7 @@ snapshots:
       '@rolldown/pluginutils': 1.0.1
       vite: 8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)
 
-  '@vitejs/plugin-rsc@0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))':
+  '@vitejs/plugin-rsc@0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
       es-module-lexer: 2.3.2
@@ -4145,7 +4140,7 @@ snapshots:
       vite: 8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)
       vitefu: 1.1.3(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
     optionalDependencies:
-      react-server-dom-webpack: 19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26))
+      react-server-dom-webpack: 19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26))
 
   '@webassemblyjs/ast@1.14.1':
     dependencies:
@@ -4237,8 +4232,8 @@ snapshots:
 
   acorn@8.18.0: {}
 
-  ajv-formats@2.1.1(ajv@8.20.0):
-    optionalDependencies:
+  ajv-formats@2.1.1:
+    dependencies:
       ajv: 8.20.0
 
   ajv-keywords@5.1.0(ajv@8.20.0):
@@ -5600,7 +5595,7 @@ snapshots:
 
   react-is@16.13.1: {}
 
-  react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)):
+  react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)):
     dependencies:
       acorn-loose: 8.5.2
       neo-async: 2.6.2
@@ -5712,7 +5707,7 @@ snapshots:
     dependencies:
       '@types/json-schema': 7.0.15
       ajv: 8.20.0
-      ajv-formats: 2.1.1(ajv@8.20.0)
+      ajv-formats: 2.1.1
       ajv-keywords: 5.1.0(ajv@8.20.0)
 
   semver@6.3.1: {}
@@ -6085,7 +6080,7 @@ snapshots:
     dependencies:
       punycode: 2.3.1
 
-  vinext@1.0.0-beta.3(@vitejs/plugin-react@6.1.0(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(@vitejs/plugin-rsc@0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(next@16.3.6(@babel/core@7.29.7(supports-color@10.2.2))(@playwright/test@1.63.0)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)):
+  vinext@1.0.0-beta.3(@vitejs/plugin-react@6.1.0(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(@vitejs/plugin-rsc@0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)))(next@16.3.6(@babel/core@7.29.7(supports-color@10.2.2))(@playwright/test@1.63.0)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0)):
     dependencies:
       '@unpic/react': 1.0.2(next@16.3.6(@babel/core@7.29.7(supports-color@10.2.2))(@playwright/test@1.63.0)(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@vercel/og': 0.8.6
@@ -6100,8 +6095,8 @@ snapshots:
       vite-plugin-commonjs: 0.10.4
       web-vitals: 4.2.4
     optionalDependencies:
-      '@vitejs/plugin-rsc': 0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
-      react-server-dom-webpack: 19.2.8(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26))
+      '@vitejs/plugin-rsc': 0.5.34(react-dom@19.2.8(react@19.2.8))(react-server-dom-webpack@19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26)))(react@19.2.8)(vite@8.2.2(@types/node@22.20.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.50.0))
+      react-server-dom-webpack: 19.2.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(webpack@5.109.2(esbuild@0.28.1)(lightningcss@1.33.0)(postcss@8.5.26))
     transitivePeerDependencies:
       - next
 
